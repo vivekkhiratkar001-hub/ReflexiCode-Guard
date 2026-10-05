@@ -1,9 +1,9 @@
 """Ollama-backed implementation of the code-review provider."""
 
-import json
-
 import requests
 
+from .context import ReviewContext
+from .prompts import ReviewPromptBuilder
 from .provider import LLMProvider
 
 
@@ -19,50 +19,24 @@ class OllamaProvider(LLMProvider):
 		self.model = model
 		self.api_url = api_url
 		self.timeout = timeout
+		self.prompt_builder = ReviewPromptBuilder()
 
-	@staticmethod
-	def _format_section(context: dict, key: str) -> str:
-		"""Format text or structured context for inclusion in the prompt."""
-		value = context.get(key)
-		if value is None or value == "":
-			return "Not provided."
-		if isinstance(value, str):
-			return value
-		return json.dumps(value, indent=2, ensure_ascii=False)
-
-	def _build_prompt(self, context: dict) -> str:
-		"""Build a focused, evidence-based code-review prompt."""
-		sections = (
-			("PR title", "pr_title"),
-			("PR description", "pr_description"),
-			("Issue context", "issue_context"),
-			("Repository rules", "repository_rules"),
-			("Changed code", "changed_code"),
-			("Existing AST/static-analysis findings", "analysis_findings"),
-		)
-		provided_context = "\n\n".join(
-			f"## {title}\n{self._format_section(context, key)}"
-			for title, key in sections
-		)
-
-		return f"""You are a careful semantic code reviewer. Review only the changed code.
-Use the PR and issue context to understand the change's intent. Use repository rules
-and existing analysis findings as supporting evidence, not as automatic proof.
-
-Never invent files, line numbers, repository rules, or evidence. Report only issues
-supported by the supplied context. Explain each issue concisely and actionably, and
-suggest a correction when possible. Return concise code-review findings only. If no
-evidence-supported issue is present, say that no findings were identified.
-
-{provided_context}
-"""
-
-	def review(self, context: dict) -> str:
-		"""Ask Ollama to review the context and return its response text."""
+	def review(self, context: ReviewContext | dict | str) -> str:
+		"""Ask Ollama to review a context or prompt and return raw JSON text."""
+		if isinstance(context, str):
+			prompt = context
+		else:
+			review_context = (
+				context
+				if isinstance(context, ReviewContext)
+				else ReviewContext.model_validate(context)
+			)
+			prompt = self.prompt_builder.build(review_context)
 		payload = {
 			"model": self.model,
-			"prompt": self._build_prompt(context),
+			"prompt": prompt,
 			"stream": False,
+			"format": "json",
 		}
 
 		try:
@@ -83,7 +57,9 @@ evidence-supported issue is present, say that no findings were identified.
 			) from exc
 		except requests.exceptions.HTTPError as exc:
 			status = exc.response.status_code if exc.response is not None else "unknown"
-			raise RuntimeError(f"Ollama returned HTTP {status}.") from exc
+			body = exc.response.text[:500] if exc.response is not None else ""
+			detail = f" Details: {body}" if body else ""
+			raise RuntimeError(f"Ollama returned HTTP {status}.{detail}") from exc
 		except requests.exceptions.RequestException as exc:
 			raise RuntimeError(f"The Ollama request failed: {exc}") from exc
 
@@ -92,6 +68,8 @@ evidence-supported issue is present, say that no findings were identified.
 		except ValueError as exc:
 			raise RuntimeError("Ollama returned an invalid JSON response.") from exc
 
+		if not isinstance(result, dict):
+			raise RuntimeError("Ollama returned a JSON response with an unexpected format.")
 		review_text = result.get("response")
 		if not isinstance(review_text, str):
 			raise RuntimeError("Ollama's response did not contain review text.")

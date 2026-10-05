@@ -2,11 +2,13 @@
 
 from abc import ABC, abstractmethod
 
+from .context import ReviewContext
+
 
 class LLMProvider(ABC):
 	"""Common interface implemented by code-review language models."""
 
 	@abstractmethod
-	def review(self, context: dict) -> str:
-		"""Review the supplied pull-request context and return feedback."""
+	def review(self, context: ReviewContext | dict | str) -> str:
+		"""Return raw model output for a context object or ready-built prompt."""
 		raise NotImplementedError

@@ -1,20 +1,22 @@
 """Standalone smoke test for the local Ollama review provider."""
 
-from src.llm import OllamaProvider
+from src.llm import OllamaProvider, ReviewContextBuilder, ReviewPipeline
 
 
 def main() -> None:
-    context = {
-        "pr_title": "Implement the add function",
-        "pr_description": "Add a helper that returns the sum of two numbers.",
-        "issue_context": "The function is expected to add two numbers.",
-        "repository_rules": "Keep the implementation simple and correct.",
-        "changed_code": "def add(a, b):\n    return a - b",
-        "analysis_findings": [],
-    }
+    context = ReviewContextBuilder().build(
+        pr_title="Fix user addition function",
+        pr_description="Correct the implementation of the addition function.",
+        issue_context="The function should add two numbers.",
+        changed_code={"src/example.py": "def add(a, b):\n    return a - b"},
+        repository_rules=[],
+        analysis_findings=[],
+        changed_lines={"src/example.py": [1, 2]},
+    )
 
-    provider = OllamaProvider()
-    print(provider.review(context))
+    pipeline = ReviewPipeline(OllamaProvider())
+    findings = pipeline.review(context)
+    print({"findings": [finding.model_dump() for finding in findings]})
 
 
 if __name__ == "__main__":
