@@ -7,11 +7,11 @@ def main() -> None:
     context = ReviewContextBuilder().build(
         pr_title="Fix user addition function",
         pr_description="Correct the implementation of the addition function.",
-        issue_context="The function should add two numbers.",
+        issue_context="The function should add two numbers. The incorrect statement is on line 2: return a - b.",
         changed_code={"src/example.py": "def add(a, b):\n    return a - b"},
         repository_rules=[],
         analysis_findings=[],
-        changed_lines={"src/example.py": [1, 2]},
+        changed_lines={"src/example.py": [2]},
     )
 
     pipeline = ReviewPipeline(OllamaProvider())
