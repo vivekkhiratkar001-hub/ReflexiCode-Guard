@@ -1,0 +1,11 @@
+[
+  {
+    "file": "src/services/user_service.py",
+    "line": 22,
+    "category": "Security",
+    "severity": "High",
+    "message": "Dynamic SQL built from untrusted input may enable SQL injection.",
+    "rule": "SQLI-001",
+    "evidence": "query = \"SELECT * FROM users WHERE email = '\" + email + \"'\""
+  }
+]

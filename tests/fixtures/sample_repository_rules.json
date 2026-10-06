@@ -1,0 +1,9 @@
+[
+  {
+    "rule": "Database access must use the repository layer.",
+    "category": "Architecture",
+    "severity": "High",
+    "source": "repository-policy",
+    "location": "src/services/user_service.py"
+  }
+]

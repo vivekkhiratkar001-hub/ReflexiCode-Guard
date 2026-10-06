@@ -108,6 +108,138 @@ class ReviewResponseParserTests(unittest.TestCase):
                 self.context,
             )
 
+    def test_empty_file_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ReviewResponseError, "must not be empty or whitespace-only"):
+            self.parser.parse(response_for(finding_data(file="   ")), self.context)
+
+    def test_file_not_in_changed_code_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ReviewResponseError, "not in changed_code"):
+            self.parser.parse(
+                response_for(finding_data(file="src/other.py")),
+                self.context,
+            )
+
+    def test_duplicate_findings_are_removed(self) -> None:
+        duplicate = finding_data(message="The SQL query is constructed unsafely.")
+        findings = self.parser.parse(
+            response_for(
+                finding_data(message="The SQL query is constructed unsafely."),
+                duplicate,
+            ),
+            self.context,
+        )
+        self.assertEqual(len(findings), 1)
+
+    def test_different_findings_on_same_line_are_preserved(self) -> None:
+        findings = self.parser.parse(
+            response_for(
+                finding_data(category="Security", message="SQL injection risk."),
+                finding_data(category="Correctness", message="Wrong operator used."),
+            ),
+            self.context,
+        )
+        self.assertEqual(len(findings), 2)
+
+    def test_valid_context_without_changed_lines_still_works(self) -> None:
+        context = ReviewContextBuilder().build(
+            pr_title="Fix math behavior",
+            changed_code={FILE: CODE},
+            repository_rules=[],
+            analysis_findings=[],
+        )
+        findings = self.parser.parse(response_for(finding_data(line=2)), context)
+        self.assertEqual(len(findings), 1)
+
+    def test_empty_changed_lines_mapping_is_accepted(self) -> None:
+        context = ReviewContextBuilder().build(
+            pr_title="Fix math behavior",
+            changed_code={FILE: CODE},
+            repository_rules=[],
+            analysis_findings=[],
+            changed_lines={},
+        )
+        findings = self.parser.parse(response_for(finding_data(line=2)), context)
+        self.assertEqual(len(findings), 1)
+
+    def test_mixed_valid_and_invalid_findings_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ReviewResponseError, "not in changed_code"):
+            self.parser.parse(
+                response_for(
+                    finding_data(),
+                    finding_data(file="src/other.py"),
+                ),
+                self.context,
+            )
+
+    def test_evidence_from_correct_line_is_accepted(self) -> None:
+        context = ReviewContextBuilder().build(
+            pr_title="Fix math behavior",
+            changed_code={FILE: "def add(a, b):\n    total = a + b\n    return total"},
+            repository_rules=[],
+            analysis_findings=[],
+            changed_lines={FILE: [1, 2, 3]},
+        )
+        findings = self.parser.parse(
+            response_for(finding_data(line=3, evidence="return total")),
+            context,
+        )
+        self.assertEqual(len(findings), 1)
+
+    def test_evidence_from_unrelated_line_is_rejected(self) -> None:
+        context = ReviewContextBuilder().build(
+            pr_title="Fix math behavior",
+            changed_code={FILE: "def add(a, b):\n    total = a + b\n    return total"},
+            repository_rules=[],
+            analysis_findings=[],
+            changed_lines={FILE: [1, 2, 3]},
+        )
+        with self.assertRaisesRegex(ReviewResponseError, "does not match supplied"):
+            self.parser.parse(
+                response_for(finding_data(line=3, evidence="total = a + b")),
+                context,
+            )
+
+    def test_analysis_finding_can_support_valid_evidence(self) -> None:
+        context = ReviewContextBuilder().build(
+            pr_title="Fix math behavior",
+            changed_code={FILE: CODE},
+            repository_rules=[],
+            analysis_findings=[
+                {"file": FILE, "line": 2, "message": "The function subtracts instead of adding."}
+            ],
+            changed_lines={FILE: [1, 2]},
+        )
+        findings = self.parser.parse(
+            response_for(finding_data(evidence="The function subtracts instead of adding.")),
+            context,
+        )
+        self.assertEqual(len(findings), 1)
+
+    def test_short_bug_message_is_not_treated_as_duplicate(self) -> None:
+        findings = self.parser.parse(
+            response_for(
+                finding_data(message="bug"),
+                finding_data(message="Null deref bug in x"),
+            ),
+            self.context,
+        )
+        self.assertEqual(len(findings), 2)
+
+    def test_non_ascii_message_is_not_emptied_into_duplicate_match(self) -> None:
+        findings = self.parser.parse(
+            response_for(
+                finding_data(message="Riesgo de SQL en español"),
+                finding_data(message="SQL risk in English"),
+            ),
+            self.context,
+        )
+        self.assertEqual(len(findings), 2)
+
+    def test_json_extraction_prefers_structured_response_over_prior_braces(self) -> None:
+        raw = 'Some text {} and then {"findings":[{"file":"src/math.py","line":2,"category":"Bug","severity":"High","message":"The function subtracts instead of adding.","evidence":"return a - b","suggestion":"Return a + b instead."}]}'
+        findings = self.parser.parse(raw, self.context)
+        self.assertEqual(len(findings), 1)
+
     def test_empty_response_is_rejected(self) -> None:
         with self.assertRaisesRegex(ReviewResponseError, "empty response"):
             self.parser.parse("  ")
@@ -129,6 +261,28 @@ class ProviderAndPipelineTests(unittest.TestCase):
         response.json.return_value = []
         with patch("src.llm.ollama_provider.requests.post", return_value=response):
             with self.assertRaisesRegex(RuntimeError, "unexpected format"):
+                provider.review("prompt")
+
+    def test_ollama_timeout_is_explained(self) -> None:
+        provider = OllamaProvider()
+        with patch(
+            "src.llm.ollama_provider.requests.post",
+            side_effect=requests.exceptions.Timeout("slow"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                provider.review("prompt")
+
+    def test_ollama_http_error_is_explained(self) -> None:
+        provider = OllamaProvider()
+        response = Mock()
+        response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "bad gateway",
+            response=response,
+        )
+        response.status_code = 500
+        response.text = "bad gateway"
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "Ollama returned HTTP 500"):
                 provider.review("prompt")
 
     def test_mock_provider_runs_without_ollama(self) -> None:
