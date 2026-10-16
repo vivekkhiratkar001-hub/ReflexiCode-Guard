@@ -1,12 +1,11 @@
-# Member 1 — pull request tests and optional review dry-run.
+# Pull request validation for the proposed integration.
 #
 # Security notes:
 # - Uses pull_request (not pull_request_target) so untrusted PR code never
-#   runs with privileged secrets from the base repository.
-# - Fork PRs skip the review job; GitHub does not grant write tokens to forks.
-# - The review job always runs dry-run and never publishes comments.
-# - It executes trusted base-branch code, not code from the pull request.
-# - Least-privilege permissions are set per job; checkout does not persist tokens.
+#   runs with secrets from the base repository.
+# - Tests run against the PR merge commit without credentials.
+# - GitHub API review execution is intentionally not part of pre-merge CI.
+# - Checkout does not persist credentials.
 
 name: ReflexiCode-Guard PR Review
 
@@ -28,6 +27,7 @@ jobs:
       - name: Check out the merge commit
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up Python
@@ -40,34 +40,3 @@ jobs:
 
       - name: Run the test suite
         run: python -m pytest -q
-
-  review:
-    name: Collect PR and run review (read-only dry-run)
-    needs: test
-    if: >-
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - name: Check out trusted base-branch code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
-
-      - name: Run Member 1 review entry point
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REFLEXICODE_USE_MOCK_LLM: "true"
-        run: python -m src.github --event-path "$GITHUB_EVENT_PATH" --use-mock-llm --dry-run

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import requests
 
 from src.github.client import GitHubClient
 from src.github.adapters import normalize_analysis_findings
@@ -15,6 +16,7 @@ from src.github.config import build_config
 from src.github.diff import parse_patch
 from src.github.exceptions import (
     GitHubAuthError,
+    GitHubAPIError,
     GitHubConfigError,
     GitHubNotFoundError,
     GitHubRateLimitError,
@@ -249,6 +251,49 @@ def test_client_auth_and_not_found_errors() -> None:
         client.get_pull_request("a", "b", 999)
 
 
+def test_client_uses_bearer_token_without_network_request() -> None:
+    session = Mock()
+    session.headers = {}
+    token = "synthetic-test-token"
+
+    GitHubClient(token=token, session=session)
+
+    assert session.headers["Authorization"] == f"Bearer {token}"
+    session.request.assert_not_called()
+
+
+def test_client_redacts_token_from_api_errors() -> None:
+    session = Mock()
+    session.headers = {}
+    token = "synthetic-test-token"
+    session.request.return_value = FakeResponse(500, text=f"rejected credential: {token}")
+    client = GitHubClient(token=token, session=session, max_retries=1)
+
+    with pytest.raises(GitHubAPIError) as error:
+        client.get_pull_request("acme", "demo", 1)
+
+    assert token not in str(error.value)
+
+    session.request.return_value = FakeResponse(500, reason=token)
+    with pytest.raises(GitHubAPIError) as error:
+        client.get_pull_request("acme", "demo", 1)
+
+    assert token not in str(error.value)
+
+
+def test_client_redacts_token_from_request_exceptions() -> None:
+    session = Mock()
+    session.headers = {}
+    token = "synthetic-test-token"
+    session.request.side_effect = requests.ConnectionError(f"connection failed: {token}")
+    client = GitHubClient(token=token, session=session, max_retries=1)
+
+    with pytest.raises(GitHubAPIError) as error:
+        client.get_pull_request("acme", "demo", 1)
+
+    assert token not in str(error.value)
+
+
 def test_client_retries_rate_limits() -> None:
     session = Mock()
     session.headers = {}
@@ -276,7 +321,50 @@ def test_client_raises_after_rate_limit_retries() -> None:
         client.get_pull_request("a", "b", 1)
 
 
-def test_missing_configuration() -> None:
+def test_missing_configuration_isolated_from_github_actions_environment(
+    monkeypatch, tmp_path
+) -> None:
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "repository": {"full_name": "actions/repository"},
+                "number": 42,
+                "pull_request": {
+                    "number": 42,
+                    "head": {"sha": "synthetic-head"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    actions_environment = {
+        "GITHUB_EVENT_PATH": str(event_path),
+        "GITHUB_REPOSITORY": "actions/repository",
+        "GITHUB_OWNER": "actions",
+        "GITHUB_REPO": "repository",
+        "GITHUB_PR_NUMBER": "42",
+        "GITHUB_TOKEN": "synthetic-read-token",
+        "GITHUB_API_URL": "https://api.github.test",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        "REFLEXICODE_USE_MOCK_LLM": "true",
+        "REFLEXICODE_MOCK_LLM_RESPONSE": '{"findings":[]}',
+        "REFLEXICODE_RULES_FILE": str(tmp_path / "rules.json"),
+        "REFLEXICODE_ANALYSIS_FILE": str(tmp_path / "analysis.json"),
+    }
+    for name, value in actions_environment.items():
+        monkeypatch.setenv(name, value)
+
+    actions_config = build_config()
+    assert (actions_config.owner, actions_config.repo, actions_config.pr_number) == (
+        "actions",
+        "repository",
+        42,
+    )
+
+    for name in actions_environment:
+        monkeypatch.delenv(name, raising=False)
+
     with pytest.raises(GitHubConfigError):
         build_config()
     with pytest.raises(GitHubConfigError):
@@ -348,8 +436,9 @@ def test_workflow_file_is_safe_and_present() -> None:
     assert "pull_request:" in workflow
     assert "pull_request_target:" not in workflow
     assert "python -m pytest" in workflow
-    assert "python -m src.github" in workflow
-    assert "secrets.GITHUB_TOKEN" in workflow
-    assert "permissions:" in workflow
+    assert "ref: ${{ github.sha }}" in workflow
+    assert "review:" not in workflow
+    assert "python -m src.github" not in workflow
+    assert "secrets.GITHUB_TOKEN" not in workflow
+    assert "permissions:\n      contents: read" in workflow
     assert "persist-credentials: false" in workflow
-    assert "ref: ${{ github.event.pull_request.base.sha }}" in workflow

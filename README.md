@@ -61,10 +61,12 @@ $env:GITHUB_TOKEN = "..."
 python -m src.github --owner OWNER --repo REPOSITORY --pr-number NUMBER --publish
 ```
 
-GitHub Actions runs tests and the review in dry-run mode; it does not publish
-comments automatically. See [docs/member1_github.md](docs/member1_github.md) for
-configuration and [docs/member3_llm.md](docs/member3_llm.md) for semantic-review
-details.
+GitHub Actions runs the test suite on the pull-request merge commit without
+credentials. The API-backed review is intentionally not run before merge; run
+the documented local dry run from trusted code for a non-draft, same-repository
+pull request. CI never publishes comments. See
+[docs/member1_github.md](docs/member1_github.md) for configuration and
+[docs/member3_llm.md](docs/member3_llm.md) for semantic-review details.
 
 ## Analysis and evaluation
 

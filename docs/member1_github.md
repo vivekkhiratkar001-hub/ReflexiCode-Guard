@@ -48,7 +48,7 @@ ReviewSummary
 | `src/github/cli.py` | `python -m src.github` entry point |
 | `src/github/adapters.py` | Adapters between GitHub models and shared contracts |
 | `src/github/config.py` | Environment / CLI / Actions configuration |
-| `.github/workflows/pr-review.yml` | Tests + review job |
+| `.github/workflows/pr-review.yml` | Credential-free pull-request tests |
 
 ## 4. Execution flow
 
@@ -92,12 +92,23 @@ For **publishing comments in a deliberate local run**:
 - `pull-requests: write`
 - Use a narrowly scoped token and run `--publish` only after checking dry-run output.
 
-The included GitHub Actions workflow is read-only (`contents: read`, `pull-requests: read`) and always dry-runs. It checks out trusted base-branch code for the review step, scopes `GITHUB_TOKEN` to that step, and disables persisted checkout credentials. PR test code has no token. It does not publish comments.
+The pull-request workflow runs tests on the PR merge commit with only
+`contents: read`; checkout credentials are not persisted and no token is
+provided to PR code. It does not invoke the GitHub API review CLI or publish
+comments. This avoids both testing an old base revision without the
+application and exposing a token to code supplied by the PR. Draft and fork
+PRs receive the same credential-free tests.
+
+After the change is merged, a maintainer can run the local dry-run CLI above
+from trusted code for a non-draft pull request in this repository. Review
+execution is not an automated pre-merge check; the PR checks and any required
+human review must be verified before merge.
 
 Administrator settings that are **not** changed by this code:
 
 1. Ensure Actions are enabled for the repository.
-2. Do not grant this workflow write permissions or configure it to publish.
+2. Do not grant the pull-request test workflow write permissions or configure
+   it to publish.
 3. Do **not** add a `pull_request_target` workflow.
 
 ## 7. How to run tests (Windows PowerShell)

@@ -156,6 +156,54 @@ def test_orchestrator_does_not_call_write_api_in_dry_run() -> None:
     assert "POST" not in methods
 
 
+def test_cli_passes_token_and_runs_without_publishing(monkeypatch) -> None:
+    from src.github import cli as github_cli
+
+    for name in (
+        "GITHUB_EVENT_PATH",
+        "GITHUB_REPOSITORY",
+        "GITHUB_OWNER",
+        "GITHUB_REPO",
+        "GITHUB_PR_NUMBER",
+        "GITHUB_TOKEN",
+        "GITHUB_API_URL",
+        "GITHUB_STEP_SUMMARY",
+        "REFLEXICODE_USE_MOCK_LLM",
+        "REFLEXICODE_MOCK_LLM_RESPONSE",
+        "REFLEXICODE_RULES_FILE",
+        "REFLEXICODE_ANALYSIS_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    token = "synthetic-cli-token"
+    session = _session()
+    client_args = {}
+
+    def make_client(*, token, api_url):
+        client_args.update(token=token, api_url=api_url)
+        return GitHubClient(token=token, api_url=api_url, session=session, sleeper=lambda _: None)
+
+    monkeypatch.setattr(github_cli, "GitHubClient", make_client)
+    assert main(
+        [
+            "--owner",
+            "acme",
+            "--repo",
+            "demo",
+            "--pr-number",
+            "7",
+            "--token",
+            token,
+            "--dry-run",
+            "--use-mock-llm",
+        ]
+    ) == 0
+
+    assert client_args["token"] == token
+    assert session.headers["Authorization"] == f"Bearer {token}"
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
+
+
 def test_publish_mode_posts_review_and_records_published_count() -> None:
     session = _session()
     client = GitHubClient(token="t", session=session, sleeper=lambda _: None)

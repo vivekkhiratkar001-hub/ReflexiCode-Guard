@@ -47,6 +47,7 @@ class GitHubClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self._sleep = sleeper or time.sleep
+        self._token = token.strip() if token and token.strip() else None
         self.session = session or requests.Session()
         self.session.headers.update(
             {
@@ -55,8 +56,13 @@ class GitHubClient:
                 "User-Agent": "ReflexiCode-Guard-Member1",
             }
         )
-        if token:
-            self.session.headers["Authorization"] = f"Bearer {token}"
+        if self._token:
+            self.session.headers["Authorization"] = f"Bearer {self._token}"
+
+    def _redact(self, value: str) -> str:
+        if self._token:
+            return value.replace(self._token, "[REDACTED]")
+        return value
 
     def _url(self, path: str) -> str:
         return urljoin(self.api_url, path.lstrip("/"))
@@ -68,7 +74,7 @@ class GitHubClient:
             try:
                 response = self.session.request(method, url, **kwargs)
             except requests.RequestException as exc:
-                last_error = GitHubAPIError(f"GitHub request failed: {exc}")
+                last_error = GitHubAPIError(self._redact(f"GitHub request failed: {exc}"))
                 continue
 
             if response.status_code in {401, 403} and "bad credentials" in response.text.lower():
@@ -95,9 +101,10 @@ class GitHubClient:
                     status_code=response.status_code,
                 )
             if response.status_code >= 400:
-                detail = response.text[:400].strip()
+                detail = self._redact(response.text[:400].strip())
+                reason = self._redact(response.reason)
                 raise GitHubAPIError(
-                    f"GitHub API error HTTP {response.status_code}: {detail or response.reason}",
+                    f"GitHub API error HTTP {response.status_code}: {detail or reason}",
                     status_code=response.status_code,
                 )
             return response
