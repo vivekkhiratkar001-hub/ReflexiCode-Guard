@@ -61,3 +61,8 @@ The analysis engine evaluates unified PR diffs and isolates findings specificall
 - **Finding Normalization & Deduplication**: Canonical formatting into `AnalysisFinding` with deterministic sorting and stable deduplication.
 - **Evaluation & Reproducibility**: `src/analysis/evaluation.py` calculates precision, recall, F1 score, and line localization accuracy against ground-truth benchmarks.
 
+### Member 3: Semantic Review
+
+The optional semantic-review module provides validated context construction,
+prompt generation, Ollama and mock providers, response parsing, and evaluation
+helpers. See [docs/member3_llm.md](docs/member3_llm.md) for module details.

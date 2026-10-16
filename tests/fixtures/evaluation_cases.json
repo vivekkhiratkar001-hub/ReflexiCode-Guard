@@ -1,0 +1,137 @@
+[
+  {
+    "case_id": "sql-injection-user-service",
+    "description": "User service interpolates a SQL query from user input.",
+    "changed_code": {
+      "src/services/user_service.py": "def get_user(user_id):\n    query = f\"SELECT * FROM users WHERE id = {user_id}\"\n    return db.execute(query)\n"
+    },
+    "changed_lines": {
+      "src/services/user_service.py": [1, 2, 3]
+    },
+    "repository_rules": [
+      {"rule": "Database access must use repository layer.", "category": "Architecture", "severity": "High"}
+    ],
+    "static_analysis_findings": [
+      {
+        "file": "src/services/user_service.py",
+        "line": 2,
+        "category": "Security",
+        "message": "Potential SQL injection due to dynamically constructed SQL query.",
+        "rule": "SQLI-001"
+      }
+    ],
+    "ground_truth_findings": [
+      {
+        "file": "src/services/user_service.py",
+        "line": 2,
+        "category": "Security",
+        "severity": "High",
+        "message": "Direct SQL interpolation creates a SQL injection risk."
+      }
+    ]
+  },
+  {
+    "case_id": "repository-layer-violation",
+    "description": "Service bypasses repository abstraction.",
+    "changed_code": {
+      "src/services/order_service.py": "def load_order(order_id):\n    return db.execute(f\"SELECT * FROM orders WHERE id = {order_id}\")\n"
+    },
+    "changed_lines": {
+      "src/services/order_service.py": [1, 2]
+    },
+    "repository_rules": [
+      {"rule": "All database access must go through repository classes.", "category": "Architecture", "severity": "High"}
+    ],
+    "static_analysis_findings": [
+      {
+        "file": "src/services/order_service.py",
+        "line": 2,
+        "category": "Architecture",
+        "message": "Database access bypasses repository layer.",
+        "rule": "ARCH-001"
+      }
+    ],
+    "ground_truth_findings": [
+      {
+        "file": "src/services/order_service.py",
+        "line": 2,
+        "category": "Architecture",
+        "severity": "Medium",
+        "message": "Database access should go through the repository abstraction."
+      }
+    ]
+  },
+  {
+    "case_id": "performance-loop",
+    "description": "N+1 work inside a loop.",
+    "changed_code": {
+      "src/services/report_service.py": "def build_report(users):\n    rows = []\n    for user in users:\n        rows.append(db.execute(f\"SELECT * FROM profiles WHERE id = {user.id}\"))\n    return rows\n"
+    },
+    "changed_lines": {
+      "src/services/report_service.py": [1, 2, 3, 4]
+    },
+    "repository_rules": [],
+    "static_analysis_findings": [
+      {
+        "file": "src/services/report_service.py",
+        "line": 3,
+        "category": "Performance",
+        "message": "Possible N+1 database access inside loop.",
+        "rule": "PERF-010"
+      }
+    ],
+    "ground_truth_findings": [
+      {
+        "file": "src/services/report_service.py",
+        "line": 3,
+        "category": "Performance",
+        "severity": "Medium",
+        "message": "Loop performs per-user database queries, creating N+1 behavior."
+      }
+    ]
+  },
+  {
+    "case_id": "clean-review",
+    "description": "No supported issues in the patch.",
+    "changed_code": {
+      "src/services/cache_service.py": "def warm_cache(keys):\n    return [key.upper() for key in keys]\n"
+    },
+    "changed_lines": {
+      "src/services/cache_service.py": [1, 2]
+    },
+    "repository_rules": [],
+    "static_analysis_findings": [],
+    "ground_truth_findings": []
+  },
+  {
+    "case_id": "duplicate-risk",
+    "description": "Two issues on the same line but one is a duplicate of the same problem.",
+    "changed_code": {
+      "src/services/inventory_service.py": "def fetch_item(item_id):\n    return db.execute(f\"SELECT * FROM inventory WHERE id = {item_id}\")\n"
+    },
+    "changed_lines": {
+      "src/services/inventory_service.py": [1, 2]
+    },
+    "repository_rules": [
+      {"rule": "Use repository layer for database queries.", "category": "Architecture", "severity": "High"}
+    ],
+    "static_analysis_findings": [
+      {
+        "file": "src/services/inventory_service.py",
+        "line": 2,
+        "category": "Security",
+        "message": "Dynamic SQL in database query may be vulnerable to SQL injection.",
+        "rule": "SQLI-010"
+      }
+    ],
+    "ground_truth_findings": [
+      {
+        "file": "src/services/inventory_service.py",
+        "line": 2,
+        "category": "Security",
+        "severity": "High",
+        "message": "Dynamic SQL in the service layer allows SQL injection."
+      }
+    ]
+  }
+]
