@@ -129,9 +129,8 @@ def run_static_ast_rules(
             for op, comparator in zip(node.ops, node.comparators):
                 if isinstance(op, (ast.Eq, ast.NotEq)):
                     val = get_constant_value(comparator)
-                    if val is None and isinstance(comparator, ast.Constant):
-                        val = None
-                    if val in (None, True, False) and isinstance(comparator, ast.Constant):
+                    is_singleton = val is None or type(val) is bool
+                    if is_singleton and isinstance(comparator, ast.Constant):
                         comp_lineno = real_lineno(node.lineno)
                         if comp_lineno in added_numbers:
                             diff_line = _find_line(lines, comp_lineno)

@@ -187,6 +187,26 @@ class DeterministicStaticRulesTests(unittest.TestCase):
         self.assertEqual(len(singleton), 1)
         self.assertEqual(singleton[0].line_number, 2)
 
+    def test_numeric_comparisons_are_not_mistaken_for_singleton_checks(self) -> None:
+        diff = (
+            "diff --git a/mod.py b/mod.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/mod.py\n"
+            "@@ -0,0 +1,4 @@\n"
+            "+def check(value):\n"
+            "+    if value == 0:\n"
+            "+        return value == 1\n"
+            "+    return value == False\n"
+        )
+        pr = PRContext("org", "repo", 30, "test", "", "b", "h", diff=diff)
+
+        findings = analyze_pr(pr)
+
+        singleton = [f for f in findings if "singleton" in f.message.lower()]
+        self.assertEqual(len(singleton), 1)
+        self.assertEqual(singleton[0].line_number, 4)
+
     def test_duplicate_dict_key_detected(self) -> None:
         diff = (
             "diff --git a/mod.py b/mod.py\n"
