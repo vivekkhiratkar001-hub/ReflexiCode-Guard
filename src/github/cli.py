@@ -10,6 +10,7 @@ from pathlib import Path
 from src.llm.mock_provider import MockProvider
 from src.llm.ollama_provider import OllamaProvider
 from src.llm.pipeline import ReviewPipeline
+from src.llm.prompts import ReviewPromptBuilder
 
 from .adapters import select_analysis_provider, select_rules_provider
 from .client import GitHubClient
@@ -27,6 +28,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pr-number", type=int, help="Pull request number")
     parser.add_argument("--token", help="GitHub token (defaults to GITHUB_TOKEN)")
     parser.add_argument("--api-url", help="GitHub API base URL")
+    parser.add_argument(
+        "--ollama-timeout",
+        type=int,
+        help="Ollama request timeout in seconds (defaults to REFLEXICODE_OLLAMA_TIMEOUT or 180)",
+    )
+    parser.add_argument(
+        "--ollama-num-predict",
+        type=int,
+        help="Maximum Ollama output tokens (defaults to REFLEXICODE_OLLAMA_NUM_PREDICT or 768)",
+    )
+    parser.add_argument(
+        "--ollama-num-ctx",
+        type=int,
+        help="Ollama context tokens (defaults to REFLEXICODE_OLLAMA_NUM_CTX or 8192)",
+    )
+    parser.add_argument(
+        "--review-prompt-chars",
+        type=int,
+        help="Total review prompt limit (default 10000)",
+    )
+    parser.add_argument(
+        "--review-code-chars",
+        type=int,
+        help="Changed-code character budget (default 4000)",
+    )
+    parser.add_argument(
+        "--review-analysis-chars",
+        type=int,
+        help="Analysis-evidence character budget (default 2500)",
+    )
+    parser.add_argument(
+        "--review-max-files",
+        type=int,
+        help="Maximum changed files selected for semantic review (default 5)",
+    )
     parser.add_argument("--event-path", help="Path to a GitHub Actions event JSON file")
     parser.add_argument(
         "--dry-run",
@@ -58,7 +94,21 @@ def build_parser() -> argparse.ArgumentParser:
 def build_pipeline(config: GitHubAppConfig) -> ReviewPipeline:
     if config.use_mock_llm:
         return ReviewPipeline(MockProvider(config.mock_llm_response))
-    return ReviewPipeline(OllamaProvider())
+    prompt_builder = ReviewPromptBuilder(
+        max_prompt_chars=config.review_prompt_chars,
+        code_chars=config.review_code_chars,
+        analysis_chars=config.review_analysis_chars,
+        max_files=config.review_max_files,
+    )
+    return ReviewPipeline(
+        OllamaProvider(
+            timeout=config.ollama_timeout,
+            num_predict=config.ollama_num_predict,
+            num_ctx=config.ollama_num_ctx,
+            prompt_builder=prompt_builder,
+        ),
+        prompt_builder=prompt_builder,
+    )
 
 
 def write_github_step_summary(markdown: str) -> None:
@@ -113,6 +163,13 @@ def main(argv: list[str] | None = None) -> int:
             mock_llm_response=args.mock_llm_response,
             rules_file=args.rules_file,
             analysis_file=args.analysis_file,
+            ollama_timeout=args.ollama_timeout,
+            ollama_num_predict=args.ollama_num_predict,
+            ollama_num_ctx=args.ollama_num_ctx,
+            review_prompt_chars=args.review_prompt_chars,
+            review_code_chars=args.review_code_chars,
+            review_analysis_chars=args.review_analysis_chars,
+            review_max_files=args.review_max_files,
             event_path=args.event_path,
             publish=bool(args.publish and not args.dry_run),
         )

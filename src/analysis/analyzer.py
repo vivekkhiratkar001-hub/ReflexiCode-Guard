@@ -23,6 +23,18 @@ def _is_python(path: str) -> bool:
     return path.lower().endswith(".py")
 
 
+def _report_print_findings(path: str) -> bool:
+    """Keep print diagnostics focused on application code, not output surfaces."""
+    normalized = path.replace("\\", "/").casefold()
+    parts = normalized.split("/")
+    return not (
+        parts[0] in {"tests", "scripts"}
+        or parts[-1].startswith("test_")
+        or parts[-1] == "test_ollama.py"
+        or normalized == "src/github/cli.py"
+    )
+
+
 def analyze_diff(
     diff: str,
     changed_files: Optional[Sequence[str]] = None,
@@ -54,7 +66,14 @@ def analyze_diff(
 
             hunk_rules: List[RuleFinding] = []
             if tree is not None:
-                hunk_rules.extend(run_static_ast_rules(tree, hunk.lines, line_offset))
+                hunk_rules.extend(
+                    run_static_ast_rules(
+                        tree,
+                        hunk.lines,
+                        line_offset,
+                        report_print=_report_print_findings(target_path),
+                    )
+                )
                 hunk_rules.extend(run_security_ast_rules(tree, hunk.lines, line_offset))
                 hunk_rules.extend(
                     run_complexity_ast_rules(tree, hunk.lines, line_offset, complexity_config)
@@ -62,7 +81,12 @@ def analyze_diff(
 
             # If AST rules produced no findings (e.g. fragment or malformed code), use lexical fallback
             if not hunk_rules:
-                hunk_rules.extend(run_lexical_rules(hunk.lines))
+                hunk_rules.extend(
+                    run_lexical_rules(
+                        hunk.lines,
+                        report_print=_report_print_findings(target_path),
+                    )
+                )
             else:
                 # Also ensure pattern-based secret checks ran for added lines in the hunk
                 secret_findings = [

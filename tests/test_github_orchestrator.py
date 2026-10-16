@@ -6,11 +6,12 @@ import json
 from unittest.mock import Mock
 
 from src.github.client import GitHubClient
-from src.github.cli import main
+from src.github.cli import build_pipeline, main
 from src.github.comments import ReviewPublisher
 from src.github.models import FileChange, InlineComment, PullRequestInfo, ReviewSummary
 from src.github.orchestrator import ReviewOrchestrator
 from src.llm import MockProvider, ReviewPipeline
+from src.llm.ollama_provider import OllamaProvider
 from tests.test_github import ADDED_PATCH, FakeResponse, MODIFIED_PATCH
 
 
@@ -97,6 +98,91 @@ def test_orchestrator_runs_member3_pipeline_in_dry_run() -> None:
     assert "**[High] Bug**" in summary.intended_comments[0].body
     assert "DRY RUN" in summary.to_markdown()
     assert "Comments that would be published: 1" in summary.to_markdown()
+
+
+def test_cli_pipeline_wires_configured_ollama_and_review_budgets() -> None:
+    from src.github.config import build_config
+
+    config = build_config(
+        owner="acme",
+        repo="demo",
+        pr_number=7,
+        ollama_timeout=42,
+        ollama_num_predict=512,
+        ollama_num_ctx=4096,
+        review_prompt_chars=9000,
+        review_code_chars=3500,
+        review_analysis_chars=2000,
+        review_max_files=4,
+    )
+
+    pipeline = build_pipeline(config)
+
+    assert isinstance(pipeline.provider, OllamaProvider)
+    assert pipeline.provider.timeout == 42
+    assert pipeline.provider.num_predict == 512
+    assert pipeline.provider.num_ctx == 4096
+    assert pipeline.prompt_builder.max_prompt_chars == 9000
+    assert pipeline.prompt_builder.code_chars == 3500
+    assert pipeline.prompt_builder.analysis_chars == 2000
+    assert pipeline.prompt_builder.max_files == 4
+
+
+def test_orchestrator_preserves_static_findings_and_reports_semantic_timeout() -> None:
+    session = _session(
+        files=[
+            {
+                "filename": "src/risky.py",
+                "status": "added",
+                "patch": "@@ -0,0 +1,1 @@\n+value = eval(user_input)\n",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+            }
+        ]
+    )
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+
+    class TimedOutProvider(MockProvider):
+        def review(self, context):
+            raise RuntimeError("The Ollama request timed out after 180 seconds.")
+
+    summary = ReviewOrchestrator(
+        client,
+        ReviewPipeline(TimedOutProvider("{}")),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.total_findings == 1
+    assert summary.findings_by_severity == {"High": 1}
+    assert any("Semantic review failed" in error for error in summary.errors)
+    assert any("timed out after 180 seconds" in error for error in summary.errors)
+    assert summary.intended_comments[0].path == "src/risky.py"
+    assert summary.intended_comments[0].line == 1
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
+
+
+def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None:
+    files = [
+        {
+            "filename": f"src/module_{index:02}.py",
+            "status": "added",
+            "patch": "@@ -0,0 +1,1 @@\n+def clean():\n",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+        }
+        for index in range(20)
+    ]
+    session = _session(files=files)
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    pipeline = ReviewPipeline(MockProvider('{"findings": []}'))
+
+    summary = ReviewOrchestrator(client, pipeline, dry_run=True).run("acme", "demo", 7)
+
+    assert summary.errors == []
+    assert any("context was prioritized and bounded" in warning for warning in summary.warnings)
+    assert len(pipeline.provider.last_input) < 24000
 
 
 def test_orchestrator_publishes_shared_static_findings_and_deduplicates_llm() -> None:

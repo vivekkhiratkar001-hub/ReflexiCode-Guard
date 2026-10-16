@@ -15,6 +15,13 @@ from .exceptions import GitHubConfigError
 
 
 DEFAULT_API_URL = "https://api.github.com"
+DEFAULT_OLLAMA_TIMEOUT = 180
+DEFAULT_OLLAMA_NUM_PREDICT = 768
+DEFAULT_OLLAMA_NUM_CTX = 8192
+DEFAULT_REVIEW_PROMPT_CHARS = 10000
+DEFAULT_REVIEW_CODE_CHARS = 4000
+DEFAULT_REVIEW_ANALYSIS_CHARS = 2500
+DEFAULT_REVIEW_MAX_FILES = 5
 
 
 def _truthy(value: str | None, default: bool = False) -> bool:
@@ -37,7 +44,14 @@ class GitHubAppConfig:
     mock_llm_response: str
     rules_file: Path | None
     analysis_file: Path | None
+    ollama_timeout: int = DEFAULT_OLLAMA_TIMEOUT
     head_sha: str | None = None
+    ollama_num_predict: int = DEFAULT_OLLAMA_NUM_PREDICT
+    ollama_num_ctx: int = DEFAULT_OLLAMA_NUM_CTX
+    review_prompt_chars: int = DEFAULT_REVIEW_PROMPT_CHARS
+    review_code_chars: int = DEFAULT_REVIEW_CODE_CHARS
+    review_analysis_chars: int = DEFAULT_REVIEW_ANALYSIS_CHARS
+    review_max_files: int = DEFAULT_REVIEW_MAX_FILES
 
     def require_token(self, *, for_write: bool) -> str:
         if self.token:
@@ -62,6 +76,33 @@ def _split_repository(value: str) -> tuple[str, str]:
             f"Repository must be in owner/repo form, got {value!r}."
         )
     return parts[0], parts[1]
+
+
+def _integer_setting(
+    value: int | None,
+    environment_name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+    description: str,
+) -> int:
+    raw_value: int | str = (
+        value
+        if value is not None
+        else os.environ.get(environment_name, str(default))
+    )
+    try:
+        resolved = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise GitHubConfigError(
+            f"{environment_name} must be an integer from {minimum} to {maximum} ({description})."
+        ) from exc
+    if not minimum <= resolved <= maximum:
+        raise GitHubConfigError(
+            f"{environment_name} must be an integer from {minimum} to {maximum} ({description})."
+        )
+    return resolved
 
 
 def load_github_event(event_path: Path) -> dict:
@@ -108,6 +149,13 @@ def build_config(
     mock_llm_response: str | None = None,
     rules_file: str | None = None,
     analysis_file: str | None = None,
+    ollama_timeout: int | None = None,
+    ollama_num_predict: int | None = None,
+    ollama_num_ctx: int | None = None,
+    review_prompt_chars: int | None = None,
+    review_code_chars: int | None = None,
+    review_analysis_chars: int | None = None,
+    review_max_files: int | None = None,
     event_path: str | None = None,
     publish: bool = False,
 ) -> GitHubAppConfig:
@@ -148,6 +196,86 @@ def build_config(
     if resolved_token is not None:
         resolved_token = resolved_token.strip() or None
 
+    raw_timeout = os.environ.get("REFLEXICODE_OLLAMA_TIMEOUT")
+    try:
+        timeout_value = (
+            ollama_timeout
+            if ollama_timeout is not None
+            else int(raw_timeout) if raw_timeout is not None else DEFAULT_OLLAMA_TIMEOUT
+        )
+    except ValueError as exc:
+        raise GitHubConfigError(
+            "REFLEXICODE_OLLAMA_TIMEOUT must be an integer between 1 and 900 seconds."
+        ) from exc
+    if timeout_value < 1 or timeout_value > 900:
+        raise GitHubConfigError(
+            "Ollama timeout must be an integer between 1 and 900 seconds."
+        )
+
+    num_predict = _integer_setting(
+        ollama_num_predict,
+        "REFLEXICODE_OLLAMA_NUM_PREDICT",
+        DEFAULT_OLLAMA_NUM_PREDICT,
+        minimum=64,
+        maximum=2048,
+        description="generation token limit",
+    )
+    num_ctx = _integer_setting(
+        ollama_num_ctx,
+        "REFLEXICODE_OLLAMA_NUM_CTX",
+        DEFAULT_OLLAMA_NUM_CTX,
+        minimum=2048,
+        maximum=32768,
+        description="model context token limit",
+    )
+    if num_predict >= num_ctx:
+        raise GitHubConfigError(
+            "Ollama num_predict must be smaller than num_ctx."
+        )
+    prompt_chars = _integer_setting(
+        review_prompt_chars,
+        "REFLEXICODE_REVIEW_PROMPT_CHARS",
+        DEFAULT_REVIEW_PROMPT_CHARS,
+        minimum=2500,
+        maximum=20000,
+        description="total review prompt character limit",
+    )
+    code_chars = _integer_setting(
+        review_code_chars,
+        "REFLEXICODE_REVIEW_CODE_CHARS",
+        DEFAULT_REVIEW_CODE_CHARS,
+        minimum=500,
+        maximum=12000,
+        description="changed-code character budget",
+    )
+    analysis_chars = _integer_setting(
+        review_analysis_chars,
+        "REFLEXICODE_REVIEW_ANALYSIS_CHARS",
+        DEFAULT_REVIEW_ANALYSIS_CHARS,
+        minimum=500,
+        maximum=10000,
+        description="analysis evidence character budget",
+    )
+    max_files = _integer_setting(
+        review_max_files,
+        "REFLEXICODE_REVIEW_MAX_FILES",
+        DEFAULT_REVIEW_MAX_FILES,
+        minimum=1,
+        maximum=20,
+        description="maximum selected changed files",
+    )
+    if code_chars + analysis_chars + 600 + 1500 >= prompt_chars:
+        raise GitHubConfigError(
+            "Review code and analysis budgets must leave room for rules and instructions "
+            "within the total prompt limit."
+        )
+    estimated_prompt_tokens = (prompt_chars + 3) // 4
+    if estimated_prompt_tokens + num_predict >= num_ctx:
+        raise GitHubConfigError(
+            "Configured review prompt and output token budgets may exceed Ollama num_ctx; "
+            "increase num_ctx or reduce the prompt/output limits."
+        )
+
     # A non-publishing run is always a dry run. An environment variable must
     # never silently enable GitHub writes; publication requires the explicit
     # `publish=True` gate (wired to the CLI's --publish option).
@@ -181,5 +309,12 @@ def build_config(
             if os.environ.get("REFLEXICODE_ANALYSIS_FILE")
             else None
         ),
+        ollama_timeout=timeout_value,
         head_sha=event_sha,
+        ollama_num_predict=num_predict,
+        ollama_num_ctx=num_ctx,
+        review_prompt_chars=prompt_chars,
+        review_code_chars=code_chars,
+        review_analysis_chars=analysis_chars,
+        review_max_files=max_files,
     )

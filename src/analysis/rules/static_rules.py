@@ -21,6 +21,8 @@ def run_static_ast_rules(
     tree: ast.AST,
     lines: Sequence[DiffLine],
     line_offset: int,
+    *,
+    report_print: bool = True,
 ) -> List[RuleFinding]:
     """Run AST-based deterministic static analysis rules."""
     findings: List[RuleFinding] = []
@@ -191,7 +193,7 @@ def run_static_ast_rules(
         # 6. DEF008: Call to print()
         if isinstance(node, ast.Call):
             call_name = get_call_name(node.func)
-            if call_name == "print":
+            if call_name == "print" and report_print:
                 call_lineno = real_lineno(node.lineno)
                 if call_lineno in added_numbers:
                     diff_line = _find_line(lines, call_lineno)

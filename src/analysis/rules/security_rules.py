@@ -1,6 +1,8 @@
 """Security analysis rules for detecting vulnerabilities in Python code."""
 
 import ast
+import base64
+import binascii
 import re
 from typing import List, Optional, Sequence, Tuple
 
@@ -20,7 +22,12 @@ _SUBPROCESS_FUNCTIONS = {
 
 # Secret scanning patterns
 _AWS_KEY_PATTERN = re.compile(r"\b(AKIA[0-9A-Z]{16})\b")
-_PRIVATE_KEY_PATTERN = re.compile(r"-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----")
+_PRIVATE_KEY_BLOCK_PATTERN = re.compile(
+    r"-----BEGIN (?P<label>(?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY)-----"
+    r"\s*(?P<body>[A-Za-z0-9+/=\r\n]+?)\s*"
+    r"-----END (?P=label)-----",
+    re.DOTALL,
+)
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"""(?i)\b(api_key|apikey|secret_key|secret|password|passwd|auth_token|access_token|private_token)\b\s*=\s*['"]([^'"]+)['"]"""
 )
@@ -52,6 +59,10 @@ _PLACEHOLDER_KEYWORDS = (
     "todo",
 )
 
+_SYNTHETIC_AWS_KEYS = {
+    "AKIA" + "1234567890ABCDEF",
+}
+
 
 def _is_placeholder(value: str) -> bool:
     val_lower = value.strip().lower()
@@ -60,6 +71,114 @@ def _is_placeholder(value: str) -> bool:
     if val_lower in _EXACT_PLACEHOLDERS:
         return True
     return any(keyword in val_lower for keyword in _PLACEHOLDER_KEYWORDS)
+
+
+def _is_synthetic_aws_key(value: str) -> bool:
+    """Recognize explicitly synthetic AWS examples without exempting test files."""
+    return value in _SYNTHETIC_AWS_KEYS
+
+
+def _read_der_value(data: bytes, offset: int) -> Optional[Tuple[int, bytes, int]]:
+    if offset + 2 > len(data):
+        return None
+    tag = data[offset]
+    first_length = data[offset + 1]
+    cursor = offset + 2
+    if first_length < 0x80:
+        content_length = first_length
+    else:
+        length_bytes = first_length & 0x7F
+        if length_bytes == 0 or length_bytes > 4 or cursor + length_bytes > len(data):
+            return None
+        content_length = int.from_bytes(data[cursor : cursor + length_bytes], "big")
+        cursor += length_bytes
+    end = cursor + content_length
+    if end > len(data):
+        return None
+    return tag, data[cursor:end], end
+
+
+def _read_der_sequence(data: bytes) -> Optional[list[Tuple[int, bytes]]]:
+    sequence = _read_der_value(data, 0)
+    if sequence is None or sequence[0] != 0x30 or sequence[2] != len(data):
+        return None
+    return _read_der_sequence_contents(sequence[1])
+
+
+def _read_der_sequence_contents(data: bytes) -> Optional[list[Tuple[int, bytes]]]:
+    fields: list[Tuple[int, bytes]] = []
+    cursor = 0
+    while cursor < len(data):
+        value = _read_der_value(data, cursor)
+        if value is None:
+            return None
+        fields.append((value[0], value[1]))
+        cursor = value[2]
+    return fields
+
+
+def _is_plausible_private_key(block: str) -> bool:
+    match = _PRIVATE_KEY_BLOCK_PATTERN.search(block)
+    if match is None:
+        return False
+    try:
+        decoded = base64.b64decode(
+            re.sub(r"\s+", "", match.group("body")),
+            validate=True,
+        )
+    except (binascii.Error, ValueError):
+        return False
+    if match.group("label") == "OPENSSH PRIVATE KEY":
+        return decoded.startswith(b"openssh-key-v1\x00") and len(decoded) > 32
+    fields = _read_der_sequence(decoded)
+    if fields is None or not fields:
+        return False
+    label = match.group("label")
+    if label == "RSA PRIVATE KEY":
+        return (
+            len(fields) == 9
+            and all(tag == 0x02 and value for tag, value in fields)
+            and fields[0][1] in (b"\x00", b"\x01")
+        )
+    if label == "DSA PRIVATE KEY":
+        return (
+            len(fields) == 6
+            and all(tag == 0x02 and value for tag, value in fields)
+            and fields[0][1] == b"\x00"
+        )
+    if label == "EC PRIVATE KEY":
+        return (
+            len(fields) >= 2
+            and fields[0] == (0x02, b"\x01")
+            and fields[1][0] == 0x04
+            and bool(fields[1][1])
+        )
+    if label == "ENCRYPTED PRIVATE KEY":
+        return (
+            len(fields) == 2
+            and fields[0][0] == 0x30
+            and any(
+                tag == 0x06
+                for tag, _ in _read_der_sequence_contents(fields[0][1]) or []
+            )
+            and fields[1][0] == 0x04
+            and bool(fields[1][1])
+        )
+    if label == "PRIVATE KEY":
+        if len(fields) != 3 or fields[0][0] != 0x02 or fields[0][1] not in (b"\x00", b"\x01"):
+            return False
+        algorithm = (
+            _read_der_sequence_contents(fields[1][1])
+            if fields[1][0] == 0x30
+            else None
+        )
+        return (
+            algorithm is not None
+            and any(tag == 0x06 and value for tag, value in algorithm)
+            and fields[2][0] == 0x04
+            and bool(fields[2][1])
+        )
+    return False
 
 
 def _mask_secret(text: str) -> str:
@@ -304,13 +423,56 @@ def run_security_ast_rules(
                         )
 
     # SEC005: Hardcoded credentials & Secrets scanning in added lines
+    added_groups: list[list[DiffLine]] = []
+    added_group: list[DiffLine] = []
+    previous_added_number: Optional[int] = None
+    for diff_line in lines:
+        if diff_line.is_added and diff_line.number is not None:
+            if (
+                added_group
+                and previous_added_number is not None
+                and diff_line.number != previous_added_number + 1
+            ):
+                added_groups.append(added_group)
+                added_group = []
+            added_group.append(diff_line)
+            previous_added_number = diff_line.number
+        else:
+            if added_group:
+                added_groups.append(added_group)
+                added_group = []
+            previous_added_number = None
+    if added_group:
+        added_groups.append(added_group)
+
+    for group in added_groups:
+        added_text = "\n".join(line.text for line in group)
+        if not _is_plausible_private_key(added_text):
+            continue
+        match = _PRIVATE_KEY_BLOCK_PATTERN.search(added_text)
+        if match is None:
+            continue
+        key_line_index = added_text.count("\n", 0, match.start())
+        findings.append(
+            RuleFinding(
+                rule_id="SEC005",
+                category=FindingCategory.SECURITY.value,
+                severity=Severity.CRITICAL.value,
+                message="Hardcoded private key block detected in source code.",
+                suggestion="Do not commit private keys into version control; use secure key storage.",
+                line_number=group[key_line_index].number,
+                evidence="[REDACTED PRIVATE KEY BLOCK]",
+            )
+        )
+
     for line in lines:
         if not line.is_added or line.number is None:
             continue
 
         raw_text = line.text
         # AWS Key check
-        if _AWS_KEY_PATTERN.search(raw_text):
+        aws_match = _AWS_KEY_PATTERN.search(raw_text)
+        if aws_match and not _is_synthetic_aws_key(aws_match.group(1)):
             findings.append(
                 RuleFinding(
                     rule_id="SEC005",
@@ -320,20 +482,6 @@ def run_security_ast_rules(
                     suggestion="Remove the secret key and supply credentials via environment variables or secret manager.",
                     line_number=line.number,
                     evidence=_mask_secret(raw_text).strip(),
-                )
-            )
-
-        # Private Key check
-        elif _PRIVATE_KEY_PATTERN.search(raw_text):
-            findings.append(
-                RuleFinding(
-                    rule_id="SEC005",
-                    category=FindingCategory.SECURITY.value,
-                    severity=Severity.CRITICAL.value,
-                    message="Hardcoded private key block detected in source code.",
-                    suggestion="Do not commit private keys into version control; use secure key storage.",
-                    line_number=line.number,
-                    evidence="-----BEGIN PRIVATE KEY----- [REDACTED]",
                 )
             )
 

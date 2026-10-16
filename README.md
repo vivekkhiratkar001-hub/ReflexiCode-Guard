@@ -53,6 +53,24 @@ repositories or explicitly publishing comments.
 python -m src.github --owner OWNER --repo REPOSITORY --pr-number NUMBER --dry-run --use-mock-llm
 ```
 
+The local Ollama request defaults to a 180-second timeout, 768 generated tokens,
+and an 8192-token model context. Configure these with `--ollama-timeout`,
+`--ollama-num-predict`, and `--ollama-num-ctx`, or the corresponding
+`REFLEXICODE_OLLAMA_*` environment variables. The semantic prompt defaults to a
+10,000-character total limit, with 4,000 characters for changed code, 2,500 for
+analysis evidence, and at most five selected files. These limits can be adjusted
+with `--review-prompt-chars`, `--review-code-chars`,
+`--review-analysis-chars`, and `--review-max-files` or their
+`REFLEXICODE_REVIEW_*` environment variables.
+
+Files are prioritized by security/correctness findings and production relevance.
+The model is asked to return at most five concise findings. The provider streams
+responses and logs prompt size, estimated tokens, time to first output, elapsed
+time, and generation metrics without source text. If some files, lines, rules,
+or analysis evidence do not fit, the result identifies the reduced semantic
+coverage; omitted files are explicitly not considered reviewed. Deterministic
+findings are retained if semantic review fails, and the CLI reports the failure.
+
 Publishing requires a token with pull-request write permission and an explicit
 `--publish` flag:
 
