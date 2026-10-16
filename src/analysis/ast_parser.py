@@ -37,7 +37,7 @@ class ParsedAST:
 
 def get_call_name(node: ast.AST) -> Optional[str]:
     """Extract a dotted or simple name from an ast.Call or expression.
-    
+
     Examples:
         eval -> "eval"
         os.system -> "os.system"
@@ -83,7 +83,7 @@ def tokenize_source(source: str) -> List[tokenize.TokenInfo]:
 
 def parse_source_or_fragment(lines_text: Sequence[str]) -> Tuple[Optional[ast.AST], int, Optional[SyntaxDiagnostic]]:
     """Safely parse code lines that may be a complete file or an indented diff hunk.
-    
+
     Returns:
         (tree, line_offset, syntax_diagnostic)
         where line_offset is the line number added by wrappers (0 if no wrapper).

@@ -93,7 +93,7 @@ def _clean_diff_path(raw: str) -> Optional[str]:
 
 def parse_unified_diff(diff_text: str) -> List[FileDiff]:
     """Parse a unified git diff into structured FileDiff models.
-    
+
     Correctly tracks:
     - Added, modified, deleted, and renamed files
     - Multiple hunks per file

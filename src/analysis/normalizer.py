@@ -46,7 +46,7 @@ def deduplicate_and_sort_findings(
     raw_findings: Iterable[RuleFinding],
 ) -> List[AnalysisFinding]:
     """Deduplicate findings by identity and return deterministically ordered list.
-    
+
     Identical defects on the same file and line with the same message are deduplicated.
     Distinct defects occurring on the same line are preserved.
     """

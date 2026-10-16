@@ -45,12 +45,12 @@ def evaluate_findings(
     line_tolerance: int = 0,
 ) -> EvaluationMetric:
     """Evaluate reported findings against ground-truth defects.
-    
+
     Args:
         findings: Findings output by analyze_pr.
         ground_truth: Known true defects.
         line_tolerance: Allowable line difference (0 for exact match).
-    
+
     Returns:
         EvaluationMetric with calculated precision, recall, F1, and localization accuracy.
     """

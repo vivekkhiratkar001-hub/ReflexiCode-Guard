@@ -24,7 +24,7 @@ class ComplexityConfig:
 
 def calculate_cyclomatic_complexity(func_node: ast.AST) -> int:
     """Calculate McCabe cyclomatic complexity for a function AST node.
-    
+
     Base complexity is 1.
     Each branch/decision point increments complexity:
     - if, elif
@@ -35,7 +35,7 @@ def calculate_cyclomatic_complexity(func_node: ast.AST) -> int:
     - ternary if (IfExp)
     - comprehension filtering conditions
     - boolean operations (and, or)
-    
+
     Nested functions are treated as independent units and not double-counted.
     """
     complexity = 1
@@ -112,7 +112,7 @@ def run_complexity_ast_rules(
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             def_lineno = real_lineno(node.lineno)
-            
+
             # Check if this function has any changed lines in the diff
             # Find all line numbers spanned by this function
             end_lineno = getattr(node, "end_lineno", node.lineno)
