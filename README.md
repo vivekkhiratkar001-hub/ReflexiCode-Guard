@@ -53,6 +53,13 @@ repositories or explicitly publishing comments.
 python -m src.github --owner OWNER --repo REPOSITORY --pr-number NUMBER --dry-run --use-mock-llm
 ```
 
+The Ollama semantic-review request defaults to a 180-second timeout. Configure
+it with `--ollama-timeout SECONDS` or `REFLEXICODE_OLLAMA_TIMEOUT` (valid range:
+1-900 seconds). Review prompts are deterministically prioritized and capped;
+when some files, lines, rules, or analysis evidence do not fit, the result
+reports the omitted semantic-review coverage while retaining deterministic
+findings.
+
 Publishing requires a token with pull-request write permission and an explicit
 `--publish` flag:
 

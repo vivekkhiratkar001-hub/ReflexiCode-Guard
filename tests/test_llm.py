@@ -11,7 +11,7 @@ from src.llm.mock_provider import MockProvider
 from src.llm.ollama_provider import OllamaProvider
 from src.llm.parser import ReviewResponseError, ReviewResponseParser
 from src.llm.pipeline import ReviewPipeline
-from src.llm.prompts import ReviewPromptBuilder
+from src.llm.prompts import MAX_REVIEW_PROMPT_CHARS, ReviewPromptBuilder
 from src.llm.schemas import ReviewFinding
 
 
@@ -261,6 +261,37 @@ class ReviewResponseParserTests(unittest.TestCase):
 
 
 class ProviderAndPipelineTests(unittest.TestCase):
+    def test_ollama_success_uses_configured_timeout_and_logs_only_prompt_size(self) -> None:
+        provider = OllamaProvider(timeout=37)
+        response = Mock()
+        response.json.return_value = {"response": '{"findings": []}'}
+
+        with patch("src.llm.ollama_provider.requests.post", return_value=response) as post:
+            with self.assertLogs("src.llm.ollama_provider", level="INFO") as logs:
+                result = provider.review("sensitive source content")
+
+        self.assertEqual(result, '{"findings": []}')
+        self.assertEqual(post.call_args.kwargs["timeout"], 37)
+        log_output = "\n".join(logs.output)
+        self.assertIn("prompt_chars=24", log_output)
+        self.assertNotIn("sensitive source content", log_output)
+
+    def test_ollama_invalid_response_json_is_explained(self) -> None:
+        provider = OllamaProvider()
+        response = Mock()
+        response.json.side_effect = ValueError("invalid")
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "invalid JSON response"):
+                provider.review("prompt")
+
+    def test_ollama_empty_review_response_is_rejected(self) -> None:
+        provider = OllamaProvider()
+        response = Mock()
+        response.json.return_value = {"response": "  "}
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "empty review response"):
+                provider.review("prompt")
+
     def test_ollama_connection_failure_is_explained(self) -> None:
         provider = OllamaProvider()
         with patch(
@@ -333,9 +364,55 @@ class ProviderAndPipelineTests(unittest.TestCase):
 
     def test_prompt_builder_includes_every_context_section(self) -> None:
         prompt = ReviewPromptBuilder().build(sample_context())
-        for expected in ("pr_title", "pr_description", "issue_context", "changed_code", "repository_rules", "analysis_findings"):
+        for expected in (
+            "PR title",
+            "PR description",
+            "Issue context",
+            "Prioritized changed code",
+            "Repository Rules",
+            "AST / Static Analysis Findings",
+        ):
             with self.subTest(section=expected):
                 self.assertIn(expected, prompt)
+
+    def test_prompt_is_bounded_and_reports_prioritized_omissions(self) -> None:
+        changed_code = {
+            f"src/module_{index:02}.py": "\n".join(
+                f"value_{line} = {line}" for line in range(1, 101)
+            )
+            for index in range(30)
+        }
+        changed_lines = {path: [1, 2, 3] for path in changed_code}
+        line_content = {
+            path: {line: f"value_{line} = {line}" for line in (1, 2, 3)}
+            for path in changed_code
+        }
+        findings = [
+            {
+                "file": path,
+                "line": 2,
+                "category": "Security" if index == 29 else "Static Analysis",
+                "severity": "Critical" if index == 29 else "Low",
+                "message": f"Finding for module {index}.",
+                "evidence": "value_2 = 2",
+            }
+            for index, path in enumerate(changed_code)
+        ]
+        context = ReviewContextBuilder().build(
+            pr_title="Review many files",
+            changed_code=changed_code,
+            analysis_findings=findings,
+            changed_lines=changed_lines,
+            changed_line_content=line_content,
+        )
+
+        result = ReviewPromptBuilder().build_with_metadata(context)
+
+        self.assertLessEqual(len(result.prompt), MAX_REVIEW_PROMPT_CHARS)
+        self.assertIn("src/module_29.py", result.prompt)
+        self.assertTrue(result.limitations)
+        self.assertIn("of 30 files", " ".join(result.limitations))
+        self.assertNotIn("changed_line_content", result.prompt)
 
 
 if __name__ == "__main__":

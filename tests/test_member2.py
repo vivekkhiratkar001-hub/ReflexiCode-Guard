@@ -1,6 +1,7 @@
 """Comprehensive test suite for Member 2: AST, diff localization, static, security, complexity, and evaluation."""
 
 import ast
+import base64
 import unittest
 from typing import List
 
@@ -288,14 +289,14 @@ class SecurityRulesTests(unittest.TestCase):
         self.assertEqual(sql_f[0].line_number, 2)
 
     def test_hardcoded_aws_key_masked_in_evidence(self) -> None:
-        # Synthetic dummy AWS format key: AKIA + 16 chars
+        synthetic_key = "AKIA" + "A1B2C3D4E5F6G7H8"
         diff = (
             "diff --git a/auth.py b/auth.py\n"
             "new file mode 100644\n"
             "--- /dev/null\n"
             "+++ b/auth.py\n"
             "@@ -0,0 +1,1 @@\n"
-            "+AWS_KEY = 'AKIA1234567890ABCDEF'\n"
+            f"+AWS_KEY = '{synthetic_key}'\n"
         )
         pr = PRContext("org", "repo", 9, "test", "", "b", "h", diff=diff)
         findings = analyze_pr(pr)
@@ -303,8 +304,111 @@ class SecurityRulesTests(unittest.TestCase):
         self.assertEqual(len(aws_f), 1)
         self.assertEqual(aws_f[0].severity, Severity.CRITICAL.value)
         # Verify secret is masked in evidence!
-        self.assertNotIn("AKIA1234567890ABCDEF", aws_f[0].evidence)
+        self.assertNotIn(synthetic_key, aws_f[0].evidence)
         self.assertIn("AKIA****", aws_f[0].evidence)
+
+    def test_clearly_synthetic_aws_fixture_is_not_reported_even_in_tests(self) -> None:
+        synthetic_key = "AKIA" + "1234567890ABCDEF"
+        diff = (
+            "diff --git a/tests/fixtures.py b/tests/fixtures.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/tests/fixtures.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            f"+AWS_KEY = '{synthetic_key}'\n"
+        )
+        self.assertEqual(analyze_pr(PRContext("org", "repo", 10, "test", "", "b", "h", diff=diff)), [])
+
+    def test_aws_key_ending_in_example_is_not_broadly_exempted(self) -> None:
+        key = "AKIA" + "A1B2C3D4EEXAMPLE"
+        diff = (
+            "diff --git a/auth.py b/auth.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/auth.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            f"+AWS_KEY = '{key}'\n"
+        )
+        findings = analyze_pr(PRContext("org", "repo", 15, "test", "", "b", "h", diff=diff))
+        self.assertTrue(any("aws access key" in finding.message.lower() for finding in findings))
+
+    def test_complete_private_key_block_is_detected_with_redacted_evidence(self) -> None:
+        def der_value(tag: int, content: bytes) -> bytes:
+            return bytes((tag, len(content))) + content
+
+        algorithm = der_value(
+            0x30,
+            der_value(0x06, bytes.fromhex("2a864886f70d010101")) + b"\x05\x00",
+        )
+        rsa_private_key = der_value(
+            0x30,
+            b"".join(der_value(0x02, b"\x01") for _ in range(9)),
+        )
+        der = der_value(
+            0x30,
+            der_value(0x02, b"\x00")
+            + algorithm
+            + der_value(0x04, rsa_private_key),
+        )
+        body = base64.b64encode(der).decode("ascii")
+        diff = (
+            "diff --git a/keys.py b/keys.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/keys.py\n"
+            "@@ -0,0 +1,5 @@\n"
+            "+PRIVATE_KEY = '''-----BEGIN PRIVATE KEY-----\n"
+            f"+{body}\n"
+            "+-----END PRIVATE KEY-----\n"
+            "+'''\n"
+        )
+        findings = analyze_pr(PRContext("org", "repo", 11, "test", "", "b", "h", diff=diff))
+        private_findings = [f for f in findings if "private key block" in f.message.lower()]
+        self.assertEqual(len(private_findings), 1)
+        self.assertEqual(private_findings[0].line_number, 1)
+        self.assertEqual(private_findings[0].evidence, "[REDACTED PRIVATE KEY BLOCK]")
+        self.assertNotIn(body, private_findings[0].evidence)
+
+    def test_unrelated_der_sequence_is_not_reported_as_a_private_key(self) -> None:
+        encoded_data = base64.b64encode(
+            b"\x30\x12" + b"\x02\x01\x00" * 6
+        ).decode("ascii")
+        diff = (
+            "diff --git a/data.py b/data.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/data.py\n"
+            "@@ -0,0 +1,3 @@\n"
+            "+DATA = '''-----BEGIN PRIVATE KEY-----\n"
+            f"+{encoded_data}\n"
+            "+-----END PRIVATE KEY-----'''\n"
+        )
+        findings = analyze_pr(PRContext("org", "repo", 14, "test", "", "b", "h", diff=diff))
+        self.assertFalse(any("private key block" in f.message.lower() for f in findings))
+
+    def test_private_key_rule_marker_without_a_complete_block_is_not_reported(self) -> None:
+        diff = (
+            "diff --git a/security_rules.py b/security_rules.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/security_rules.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+PRIVATE_KEY_MARKER = '-----BEGIN PRIVATE KEY-----'\n"
+        )
+        findings = analyze_pr(PRContext("org", "repo", 12, "test", "", "b", "h", diff=diff))
+        self.assertFalse(any("private key block" in f.message.lower() for f in findings))
+
+    def test_security_scanning_remains_enabled_in_test_paths(self) -> None:
+        diff = (
+            "diff --git a/tests/test_security.py b/tests/test_security.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/tests/test_security.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+result = eval(user_input)\n"
+        )
+        findings = analyze_pr(PRContext("org", "repo", 13, "test", "", "b", "h", diff=diff))
+        self.assertTrue(any(f.category == "security" for f in findings))
 
     def test_placeholder_token_is_not_flagged(self) -> None:
         diff = (

@@ -100,19 +100,25 @@ class ReviewOrchestrator:
             )
 
         shared_context = build_shared_pr_context(pr, files)
+        reviewer = SharedContractReviewer(
+            self.pipeline,
+            changed_code,
+            changed_lines,
+            build_changed_line_content(files, patches),
+            self.context_builder,
+        )
         review_result = run_shared_review(
             shared_context,
             repository_root=self.repository_root,
-            reviewer=SharedContractReviewer(
-                self.pipeline,
-                changed_code,
-                changed_lines,
-                build_changed_line_content(files, patches),
-                self.context_builder,
-            ),
+            reviewer=reviewer,
             repository_rules=json.dumps(rules, ensure_ascii=False),
             initial_findings=analysis,
         )
+        if reviewer.context_limitations:
+            summary.warnings.append(
+                "Semantic review context was prioritized and bounded: "
+                + " ".join(reviewer.context_limitations)
+            )
         if review_result.status is ReviewStatus.PARTIAL:
             summary.errors.append(review_result.summary)
         findings = self._to_publishable_findings(review_result.findings, summary)

@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pr-number", type=int, help="Pull request number")
     parser.add_argument("--token", help="GitHub token (defaults to GITHUB_TOKEN)")
     parser.add_argument("--api-url", help="GitHub API base URL")
+    parser.add_argument(
+        "--ollama-timeout",
+        type=int,
+        help="Ollama request timeout in seconds (defaults to REFLEXICODE_OLLAMA_TIMEOUT or 180)",
+    )
     parser.add_argument("--event-path", help="Path to a GitHub Actions event JSON file")
     parser.add_argument(
         "--dry-run",
@@ -58,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
 def build_pipeline(config: GitHubAppConfig) -> ReviewPipeline:
     if config.use_mock_llm:
         return ReviewPipeline(MockProvider(config.mock_llm_response))
-    return ReviewPipeline(OllamaProvider())
+    return ReviewPipeline(OllamaProvider(timeout=config.ollama_timeout))
 
 
 def write_github_step_summary(markdown: str) -> None:
@@ -113,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             mock_llm_response=args.mock_llm_response,
             rules_file=args.rules_file,
             analysis_file=args.analysis_file,
+            ollama_timeout=args.ollama_timeout,
             event_path=args.event_path,
             publish=bool(args.publish and not args.dry_run),
         )

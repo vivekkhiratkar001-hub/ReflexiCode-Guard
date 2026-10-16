@@ -1,10 +1,15 @@
 """Ollama-backed implementation of the code-review provider."""
 
+import logging
+from time import monotonic
+
 import requests
 
 from .context import ReviewContext
 from .prompts import ReviewPromptBuilder
 from .provider import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaProvider(LLMProvider):
@@ -39,6 +44,13 @@ class OllamaProvider(LLMProvider):
 			"format": "json",
 		}
 
+		started = monotonic()
+		logger.info(
+			"Ollama review request started: prompt_chars=%d prompt_bytes=%d timeout_seconds=%s",
+			len(prompt),
+			len(prompt.encode("utf-8")),
+			self.timeout,
+		)
 		try:
 			response = requests.post(
 				self.api_url,
@@ -47,30 +59,40 @@ class OllamaProvider(LLMProvider):
 			)
 			response.raise_for_status()
 		except requests.exceptions.ConnectionError as exc:
+			logger.warning("Ollama review request could not connect after %.2f seconds.", monotonic() - started)
 			raise RuntimeError(
-				f"Could not connect to Ollama at {self.api_url}. "
-				"Make sure Ollama is running."
+				"Could not connect to Ollama. Make sure Ollama is running."
 			) from exc
 		except requests.exceptions.Timeout as exc:
+			logger.warning("Ollama review request timed out after %.2f seconds.", monotonic() - started)
 			raise RuntimeError(
 				f"The Ollama request timed out after {self.timeout} seconds."
 			) from exc
 		except requests.exceptions.HTTPError as exc:
 			status = exc.response.status_code if exc.response is not None else "unknown"
-			body = exc.response.text[:500] if exc.response is not None else ""
-			detail = f" Details: {body}" if body else ""
-			raise RuntimeError(f"Ollama returned HTTP {status}.{detail}") from exc
+			logger.warning("Ollama returned HTTP %s after %.2f seconds.", status, monotonic() - started)
+			raise RuntimeError(f"Ollama returned HTTP {status}.") from exc
 		except requests.exceptions.RequestException as exc:
-			raise RuntimeError(f"The Ollama request failed: {exc}") from exc
+			logger.warning("Ollama review request failed after %.2f seconds.", monotonic() - started)
+			raise RuntimeError(
+				f"The Ollama request failed ({type(exc).__name__})."
+			) from exc
 
 		try:
 			result = response.json()
 		except ValueError as exc:
+			logger.warning("Ollama returned invalid JSON after %.2f seconds.", monotonic() - started)
 			raise RuntimeError("Ollama returned an invalid JSON response.") from exc
 
 		if not isinstance(result, dict):
+			logger.warning("Ollama returned an unexpected response format after %.2f seconds.", monotonic() - started)
 			raise RuntimeError("Ollama returned a JSON response with an unexpected format.")
 		review_text = result.get("response")
 		if not isinstance(review_text, str):
+			logger.warning("Ollama response omitted review text after %.2f seconds.", monotonic() - started)
 			raise RuntimeError("Ollama's response did not contain review text.")
+		if not review_text.strip():
+			logger.warning("Ollama returned an empty review after %.2f seconds.", monotonic() - started)
+			raise RuntimeError("Ollama returned an empty review response.")
+		logger.info("Ollama review request completed in %.2f seconds.", monotonic() - started)
 		return review_text

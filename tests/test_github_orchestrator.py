@@ -99,6 +99,63 @@ def test_orchestrator_runs_member3_pipeline_in_dry_run() -> None:
     assert "Comments that would be published: 1" in summary.to_markdown()
 
 
+def test_orchestrator_preserves_static_findings_and_reports_semantic_timeout() -> None:
+    session = _session(
+        files=[
+            {
+                "filename": "src/risky.py",
+                "status": "added",
+                "patch": "@@ -0,0 +1,1 @@\n+value = eval(user_input)\n",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+            }
+        ]
+    )
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+
+    class TimedOutProvider(MockProvider):
+        def review(self, context):
+            raise RuntimeError("The Ollama request timed out after 180 seconds.")
+
+    summary = ReviewOrchestrator(
+        client,
+        ReviewPipeline(TimedOutProvider("{}")),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.total_findings == 1
+    assert summary.findings_by_severity == {"High": 1}
+    assert any("Semantic review failed" in error for error in summary.errors)
+    assert any("timed out after 180 seconds" in error for error in summary.errors)
+    assert summary.intended_comments[0].path == "src/risky.py"
+    assert summary.intended_comments[0].line == 1
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
+
+
+def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None:
+    files = [
+        {
+            "filename": f"src/module_{index:02}.py",
+            "status": "added",
+            "patch": "@@ -0,0 +1,1 @@\n+def clean():\n",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+        }
+        for index in range(20)
+    ]
+    session = _session(files=files)
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    pipeline = ReviewPipeline(MockProvider('{"findings": []}'))
+
+    summary = ReviewOrchestrator(client, pipeline, dry_run=True).run("acme", "demo", 7)
+
+    assert summary.errors == []
+    assert any("context was prioritized and bounded" in warning for warning in summary.warnings)
+    assert len(pipeline.provider.last_input) < 24000
+
+
 def test_orchestrator_publishes_shared_static_findings_and_deduplicates_llm() -> None:
     session = _session(
         files=[

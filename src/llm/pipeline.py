@@ -19,9 +19,12 @@ class ReviewPipeline:
         self.provider = provider
         self.prompt_builder = prompt_builder or ReviewPromptBuilder()
         self.parser = parser or ReviewResponseParser()
+        self.last_context_limitations: tuple[str, ...] = ()
 
     def review(self, context: ReviewContext) -> list[ReviewFinding]:
         """Run a review and return only schema- and context-validated findings."""
-        prompt = self.prompt_builder.build(context)
+        built_prompt = self.prompt_builder.build_with_metadata(context)
+        self.last_context_limitations = built_prompt.limitations
+        prompt = built_prompt.prompt
         raw_response = self.provider.review(prompt)
         return self.parser.parse(raw_response, context)

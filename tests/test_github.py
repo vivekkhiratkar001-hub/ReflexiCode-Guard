@@ -379,6 +379,21 @@ def test_config_from_cli_values() -> None:
     assert config.dry_run is True
 
 
+def test_ollama_timeout_configuration_is_validated(monkeypatch) -> None:
+    config = build_config(owner="acme", repo="demo", pr_number=3)
+    assert config.ollama_timeout == 180
+
+    monkeypatch.setenv("REFLEXICODE_OLLAMA_TIMEOUT", "45")
+    assert build_config(owner="acme", repo="demo", pr_number=3).ollama_timeout == 45
+
+    monkeypatch.setenv("REFLEXICODE_OLLAMA_TIMEOUT", "not-a-number")
+    with pytest.raises(GitHubConfigError, match="REFLEXICODE_OLLAMA_TIMEOUT"):
+        build_config(owner="acme", repo="demo", pr_number=3)
+
+    with pytest.raises(GitHubConfigError, match="between 1 and 900"):
+        build_config(owner="acme", repo="demo", pr_number=901, ollama_timeout=901)
+
+
 def test_environment_cannot_enable_publishing_without_explicit_publish(monkeypatch) -> None:
     monkeypatch.setenv("REFLEXICODE_DRY_RUN", "false")
     config = build_config(owner="acme", repo="demo", pr_number=3, dry_run=False)

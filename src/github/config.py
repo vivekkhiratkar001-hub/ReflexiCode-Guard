@@ -15,6 +15,7 @@ from .exceptions import GitHubConfigError
 
 
 DEFAULT_API_URL = "https://api.github.com"
+DEFAULT_OLLAMA_TIMEOUT = 180
 
 
 def _truthy(value: str | None, default: bool = False) -> bool:
@@ -37,6 +38,7 @@ class GitHubAppConfig:
     mock_llm_response: str
     rules_file: Path | None
     analysis_file: Path | None
+    ollama_timeout: int = DEFAULT_OLLAMA_TIMEOUT
     head_sha: str | None = None
 
     def require_token(self, *, for_write: bool) -> str:
@@ -108,6 +110,7 @@ def build_config(
     mock_llm_response: str | None = None,
     rules_file: str | None = None,
     analysis_file: str | None = None,
+    ollama_timeout: int | None = None,
     event_path: str | None = None,
     publish: bool = False,
 ) -> GitHubAppConfig:
@@ -148,6 +151,22 @@ def build_config(
     if resolved_token is not None:
         resolved_token = resolved_token.strip() or None
 
+    raw_timeout = os.environ.get("REFLEXICODE_OLLAMA_TIMEOUT")
+    try:
+        timeout_value = (
+            ollama_timeout
+            if ollama_timeout is not None
+            else int(raw_timeout) if raw_timeout is not None else DEFAULT_OLLAMA_TIMEOUT
+        )
+    except ValueError as exc:
+        raise GitHubConfigError(
+            "REFLEXICODE_OLLAMA_TIMEOUT must be an integer between 1 and 900 seconds."
+        ) from exc
+    if timeout_value < 1 or timeout_value > 900:
+        raise GitHubConfigError(
+            "Ollama timeout must be an integer between 1 and 900 seconds."
+        )
+
     # A non-publishing run is always a dry run. An environment variable must
     # never silently enable GitHub writes; publication requires the explicit
     # `publish=True` gate (wired to the CLI's --publish option).
@@ -181,5 +200,6 @@ def build_config(
             if os.environ.get("REFLEXICODE_ANALYSIS_FILE")
             else None
         ),
+        ollama_timeout=timeout_value,
         head_sha=event_sha,
     )

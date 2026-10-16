@@ -170,6 +170,13 @@ class PythonRuleTests(unittest.TestCase):
         self.assertEqual(finding.line_number, 1)
         self.assertEqual(finding.severity, "low")
 
+    def test_print_output_in_scripts_is_not_reported_as_application_noise(self) -> None:
+        diff = single_file_diff(
+            "scripts/demo.py",
+            "@@ -0,0 +1,1 @@\n+print('demo output')\n",
+        )
+        self.assertEqual(analyze_pr(context(diff)), [])
+
     def test_safe_code_has_no_findings(self) -> None:
         diff = single_file_diff(
             "app.py",
