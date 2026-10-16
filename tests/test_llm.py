@@ -39,6 +39,14 @@ def response_for(*findings: dict[str, object]) -> str:
     return json.dumps({"findings": list(findings)})
 
 
+def ollama_stream(*chunks: dict[str, object]) -> Mock:
+    response = Mock()
+    response.iter_lines.return_value = iter(
+        json.dumps(chunk, separators=(",", ":")) for chunk in chunks
+    )
+    return response
+
+
 def sample_context():
     """Build a context with code and an explicit changed-line map."""
     return ReviewContextBuilder().build(
@@ -262,9 +270,18 @@ class ReviewResponseParserTests(unittest.TestCase):
 
 class ProviderAndPipelineTests(unittest.TestCase):
     def test_ollama_success_uses_configured_timeout_and_logs_only_prompt_size(self) -> None:
-        provider = OllamaProvider(timeout=37)
-        response = Mock()
-        response.json.return_value = {"response": '{"findings": []}'}
+        provider = OllamaProvider(timeout=37, num_predict=512, num_ctx=4096)
+        response = ollama_stream(
+            {"response": '{"findings": ', "done": False},
+            {
+                "response": '[]}',
+                "done": True,
+                "done_reason": "stop",
+                "eval_count": 4,
+                "prompt_eval_duration": 1_000_000_000,
+                "eval_duration": 2_000_000_000,
+            },
+        )
 
         with patch("src.llm.ollama_provider.requests.post", return_value=response) as post:
             with self.assertLogs("src.llm.ollama_provider", level="INFO") as logs:
@@ -272,22 +289,52 @@ class ProviderAndPipelineTests(unittest.TestCase):
 
         self.assertEqual(result, '{"findings": []}')
         self.assertEqual(post.call_args.kwargs["timeout"], 37)
+        self.assertTrue(post.call_args.kwargs["stream"])
+        self.assertEqual(post.call_args.kwargs["json"]["options"], {
+            "num_predict": 512,
+            "num_ctx": 4096,
+        })
         log_output = "\n".join(logs.output)
         self.assertIn("prompt_chars=24", log_output)
+        self.assertIn("estimated_prompt_tokens=6", log_output)
+        self.assertIn("first_output_seconds=", log_output)
+        self.assertIn("generated_tokens=4", log_output)
         self.assertNotIn("sensitive source content", log_output)
 
-    def test_ollama_invalid_response_json_is_explained(self) -> None:
+    def test_mocked_ollama_output_passes_through_pipeline_validation(self) -> None:
+        payload = response_for(finding_data())
+        response = ollama_stream(
+            {"response": payload, "done": True, "done_reason": "stop", "eval_count": 80}
+        )
+        provider = OllamaProvider()
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            findings = ReviewPipeline(provider).review(sample_context())
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].file, FILE)
+        self.assertEqual(findings[0].line, 2)
+        self.assertEqual(findings[0].severity, "High")
+        self.assertEqual(findings[0].evidence, "return a - b")
+
+    def test_malformed_model_json_is_rejected_by_pipeline(self) -> None:
+        response = ollama_stream(
+            {"response": '{"findings":[', "done": True, "done_reason": "stop"}
+        )
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(ReviewResponseError, "valid JSON"):
+                ReviewPipeline(OllamaProvider()).review(sample_context())
+
+    def test_ollama_malformed_stream_chunk_is_explained(self) -> None:
         provider = OllamaProvider()
         response = Mock()
-        response.json.side_effect = ValueError("invalid")
+        response.iter_lines.return_value = iter(['{"response":'])
         with patch("src.llm.ollama_provider.requests.post", return_value=response):
-            with self.assertRaisesRegex(RuntimeError, "invalid JSON response"):
+            with self.assertRaisesRegex(RuntimeError, "malformed streaming JSON"):
                 provider.review("prompt")
 
     def test_ollama_empty_review_response_is_rejected(self) -> None:
         provider = OllamaProvider()
-        response = Mock()
-        response.json.return_value = {"response": "  "}
+        response = ollama_stream({"response": "  ", "done": True, "done_reason": "stop"})
         with patch("src.llm.ollama_provider.requests.post", return_value=response):
             with self.assertRaisesRegex(RuntimeError, "empty review response"):
                 provider.review("prompt")
@@ -304,7 +351,7 @@ class ProviderAndPipelineTests(unittest.TestCase):
     def test_ollama_unexpected_api_json_is_explained(self) -> None:
         provider = OllamaProvider()
         response = Mock()
-        response.json.return_value = []
+        response.iter_lines.return_value = iter(["[]"])
         with patch("src.llm.ollama_provider.requests.post", return_value=response):
             with self.assertRaisesRegex(RuntimeError, "unexpected format"):
                 provider.review("prompt")
@@ -331,6 +378,52 @@ class ProviderAndPipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Ollama returned HTTP 500"):
                 provider.review("prompt")
 
+    def test_ollama_timeout_reports_that_no_output_was_received(self) -> None:
+        provider = OllamaProvider()
+        with patch(
+            "src.llm.ollama_provider.requests.post",
+            side_effect=requests.exceptions.Timeout("slow"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "before first output"):
+                provider.review("prompt")
+
+    def test_ollama_timeout_after_first_chunk_reports_partial_progress(self) -> None:
+        provider = OllamaProvider()
+
+        def chunks():
+            yield '{"response":"{"}'
+            raise requests.exceptions.ReadTimeout("slow")
+
+        response = Mock()
+        response.iter_lines.return_value = chunks()
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "after first output"):
+                provider.review("prompt")
+
+    def test_ollama_generation_limit_reports_truncated_json(self) -> None:
+        provider = OllamaProvider(num_predict=128)
+        response = ollama_stream(
+            {
+                "response": '{"findings":[',
+                "done": True,
+                "done_reason": "length",
+            }
+        )
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "truncated at the configured generation token limit"):
+                provider.review("prompt")
+
+    def test_ollama_stream_ending_without_done_marker_is_incomplete(self) -> None:
+        provider = OllamaProvider()
+        response = ollama_stream({"response": '{"findings":[]}', "done": False})
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "ended before completion"):
+                provider.review("prompt")
+
+    def test_ollama_rejects_invalid_generation_options(self) -> None:
+        with self.assertRaisesRegex(ValueError, "smaller than num_ctx"):
+            OllamaProvider(num_predict=2048, num_ctx=2048)
+
     def test_mock_provider_runs_without_ollama(self) -> None:
         mock = MockProvider('{"findings": []}')
         self.assertEqual(mock.review("test prompt"), '{"findings": []}')
@@ -349,6 +442,39 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertIn("Fix user addition function", mock.last_input)
         self.assertIn("AST/static-analysis findings", mock.last_input)
         self.assertIn("unchanged lines unless the issue is directly caused", mock.last_input)
+
+    def test_pipeline_logs_prompt_coverage_without_source_content(self) -> None:
+        sensitive = "internal_identifier_should_not_be_logged"
+        context = ReviewContextBuilder().build(
+            changed_code={FILE: f"def add(a, b):\n    return a - b  # {sensitive}"},
+            changed_lines={FILE: [2]},
+            changed_line_content={FILE: {1: "def add(a, b):", 2: f"    return a - b  # {sensitive}"}},
+            analysis_findings=[
+                {
+                    "file": FILE,
+                    "line": 2,
+                    "category": "Bug",
+                    "severity": "High",
+                    "message": "Incorrect operation",
+                    "evidence": "return a - b",
+                }
+            ],
+        )
+        pipeline = ReviewPipeline(MockProvider('{"findings": []}'))
+
+        with self.assertLogs("src.llm.pipeline", level="INFO") as logs:
+            pipeline.review(context)
+
+        output = "\n".join(logs.output)
+        self.assertIn("files_available=1", output)
+        self.assertIn("files_included=1", output)
+        self.assertIn("changed_lines_available=1", output)
+        self.assertIn("changed_lines_included=1", output)
+        self.assertIn("findings_available=1", output)
+        self.assertIn("findings_supplied=1", output)
+        self.assertIn("findings_included=1", output)
+        self.assertIn("estimated_prompt_tokens=", output)
+        self.assertNotIn(sensitive, output)
 
     def test_context_builder_accepts_structured_pydantic_inputs(self) -> None:
         from pydantic import BaseModel
@@ -411,8 +537,60 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertLessEqual(len(result.prompt), MAX_REVIEW_PROMPT_CHARS)
         self.assertIn("src/module_29.py", result.prompt)
         self.assertTrue(result.limitations)
-        self.assertIn("of 30 files", " ".join(result.limitations))
+        self.assertLessEqual(len(result.included_files), 5)
+        self.assertIn("of 30 changed files", " ".join(result.limitations))
+        self.assertGreater(result.included_changed_lines, 0)
+        self.assertEqual(result.available_findings, 30)
+        self.assertEqual(result.supplied_findings, 5)
+        self.assertEqual(result.included_findings, 5)
+        self.assertNotIn('"message":"Finding for module 0."', result.prompt)
         self.assertNotIn("changed_line_content", result.prompt)
+
+    def test_prompt_configurable_limits_select_only_high_priority_files_and_findings(self) -> None:
+        changed_code = {
+            f"src/module_{index}.py": f"def run_{index}():\n    return {index}"
+            for index in range(8)
+        }
+        changed_lines = {path: [2] for path in changed_code}
+        line_content = {
+            path: {1: "def run():", 2: "    return 1"}
+            for path in changed_code
+        }
+        findings = [
+            {
+                "file": path,
+                "line": 2,
+                "category": "Security" if index == 7 else "Static Analysis",
+                "severity": "Critical" if index == 7 else "Low",
+                "message": f"Finding {index}",
+                "evidence": "return 1",
+            }
+            for index, path in enumerate(changed_code)
+        ]
+        context = ReviewContextBuilder().build(
+            changed_code=changed_code,
+            changed_lines=changed_lines,
+            changed_line_content=line_content,
+            analysis_findings=findings,
+        )
+        builder = ReviewPromptBuilder(
+            max_prompt_chars=6000,
+            code_chars=1200,
+            analysis_chars=1000,
+            rules_chars=300,
+            max_files=2,
+        )
+
+        result = builder.build_with_metadata(context)
+
+        self.assertLessEqual(len(result.prompt), 6000)
+        self.assertEqual(len(result.included_files), 2)
+        self.assertIn("src/module_7.py", result.included_files)
+        self.assertEqual(result.available_findings, 8)
+        self.assertEqual(result.supplied_findings, 2)
+        self.assertEqual(result.included_findings, 2)
+        self.assertNotIn('"message":"Finding 0"', result.prompt)
+        self.assertIn("Return at most 5 important", result.prompt)
 
 
 if __name__ == "__main__":

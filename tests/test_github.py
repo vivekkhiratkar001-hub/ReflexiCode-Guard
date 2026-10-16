@@ -382,6 +382,12 @@ def test_config_from_cli_values() -> None:
 def test_ollama_timeout_configuration_is_validated(monkeypatch) -> None:
     config = build_config(owner="acme", repo="demo", pr_number=3)
     assert config.ollama_timeout == 180
+    assert config.ollama_num_predict == 768
+    assert config.ollama_num_ctx == 8192
+    assert config.review_prompt_chars == 10000
+    assert config.review_code_chars == 4000
+    assert config.review_analysis_chars == 2500
+    assert config.review_max_files == 5
 
     monkeypatch.setenv("REFLEXICODE_OLLAMA_TIMEOUT", "45")
     assert build_config(owner="acme", repo="demo", pr_number=3).ollama_timeout == 45
@@ -392,6 +398,65 @@ def test_ollama_timeout_configuration_is_validated(monkeypatch) -> None:
 
     with pytest.raises(GitHubConfigError, match="between 1 and 900"):
         build_config(owner="acme", repo="demo", pr_number=901, ollama_timeout=901)
+
+
+def test_ollama_generation_and_review_budgets_are_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXICODE_OLLAMA_NUM_PREDICT", "512")
+    monkeypatch.setenv("REFLEXICODE_OLLAMA_NUM_CTX", "4096")
+    monkeypatch.setenv("REFLEXICODE_REVIEW_PROMPT_CHARS", "9000")
+    monkeypatch.setenv("REFLEXICODE_REVIEW_CODE_CHARS", "3500")
+    monkeypatch.setenv("REFLEXICODE_REVIEW_ANALYSIS_CHARS", "2000")
+    monkeypatch.setenv("REFLEXICODE_REVIEW_MAX_FILES", "4")
+
+    config = build_config(owner="acme", repo="demo", pr_number=3)
+
+    assert config.ollama_num_predict == 512
+    assert config.ollama_num_ctx == 4096
+    assert config.review_prompt_chars == 9000
+    assert config.review_code_chars == 3500
+    assert config.review_analysis_chars == 2000
+    assert config.review_max_files == 4
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "error"),
+    [
+        ("ollama_num_predict", 32, "REFLEXICODE_OLLAMA_NUM_PREDICT"),
+        ("ollama_num_ctx", 1024, "REFLEXICODE_OLLAMA_NUM_CTX"),
+        ("review_prompt_chars", 2000, "REFLEXICODE_REVIEW_PROMPT_CHARS"),
+        ("review_code_chars", 100, "REFLEXICODE_REVIEW_CODE_CHARS"),
+        ("review_analysis_chars", 100, "REFLEXICODE_REVIEW_ANALYSIS_CHARS"),
+        ("review_max_files", 0, "REFLEXICODE_REVIEW_MAX_FILES"),
+    ],
+)
+def test_ollama_generation_and_review_settings_validate_bounds(
+    setting: str, value: int, error: str
+) -> None:
+    with pytest.raises(GitHubConfigError, match=error):
+        build_config(owner="acme", repo="demo", pr_number=3, **{setting: value})
+
+
+def test_ollama_generation_context_must_exceed_output_limit() -> None:
+    with pytest.raises(GitHubConfigError, match="num_predict must be smaller"):
+        build_config(
+            owner="acme",
+            repo="demo",
+            pr_number=3,
+            ollama_num_predict=2048,
+            ollama_num_ctx=2048,
+        )
+
+
+def test_review_prompt_and_generation_budgets_must_fit_ollama_context() -> None:
+    with pytest.raises(GitHubConfigError, match="may exceed Ollama num_ctx"):
+        build_config(
+            owner="acme",
+            repo="demo",
+            pr_number=3,
+            ollama_num_predict=768,
+            ollama_num_ctx=2048,
+            review_prompt_chars=10000,
+        )
 
 
 def test_environment_cannot_enable_publishing_without_explicit_publish(monkeypatch) -> None:
