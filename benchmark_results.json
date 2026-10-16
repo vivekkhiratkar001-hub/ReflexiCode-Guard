@@ -1,0 +1,135 @@
+{
+  "overall": {
+    "total_expected": 9,
+    "total_reported": 10,
+    "true_positives": 9,
+    "false_positives": 1,
+    "false_negatives": 0,
+    "precision": 0.9,
+    "recall": 1.0,
+    "f1_score": 0.9474,
+    "exact_localization_matches": 9,
+    "localization_accuracy": 1.0
+  },
+  "prs": {
+    "PR_101": {
+      "title": "Add clean calculation utility",
+      "metric": {
+        "total_expected": 0,
+        "total_reported": 0,
+        "true_positives": 0,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "exact_localization_matches": 0,
+        "localization_accuracy": 1.0
+      },
+      "findings_count": 0,
+      "expected_count": 0
+    },
+    "PR_102": {
+      "title": "Add data registration helper",
+      "metric": {
+        "total_expected": 3,
+        "total_reported": 3,
+        "true_positives": 3,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "exact_localization_matches": 3,
+        "localization_accuracy": 1.0
+      },
+      "findings_count": 3,
+      "expected_count": 3
+    },
+    "PR_103": {
+      "title": "Add database lookup",
+      "metric": {
+        "total_expected": 3,
+        "total_reported": 3,
+        "true_positives": 3,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "exact_localization_matches": 3,
+        "localization_accuracy": 1.0
+      },
+      "findings_count": 3,
+      "expected_count": 3
+    },
+    "PR_104": {
+      "title": "Add complex decision engine",
+      "metric": {
+        "total_expected": 2,
+        "total_reported": 3,
+        "true_positives": 2,
+        "false_positives": 1,
+        "false_negatives": 0,
+        "precision": 0.6667,
+        "recall": 1.0,
+        "f1_score": 0.8,
+        "exact_localization_matches": 2,
+        "localization_accuracy": 1.0
+      },
+      "findings_count": 3,
+      "expected_count": 2
+    },
+    "PR_105": {
+      "title": "Tweak variable assignment",
+      "metric": {
+        "total_expected": 0,
+        "total_reported": 0,
+        "true_positives": 0,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "exact_localization_matches": 0,
+        "localization_accuracy": 1.0
+      },
+      "findings_count": 0,
+      "expected_count": 0
+    },
+    "PR_106": {
+      "title": "Add nested call",
+      "metric": {
+        "total_expected": 1,
+        "total_reported": 1,
+        "true_positives": 1,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "exact_localization_matches": 1,
+        "localization_accuracy": 1.0
+      },
+      "findings_count": 1,
+      "expected_count": 1
+    },
+    "PR_107": {
+      "title": "Refactor repository file layout",
+      "metric": {
+        "total_expected": 0,
+        "total_reported": 0,
+        "true_positives": 0,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "exact_localization_matches": 0,
+        "localization_accuracy": 1.0
+      },
+      "findings_count": 0,
+      "expected_count": 0
+    }
+  }
+}
