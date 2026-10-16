@@ -1,68 +1,72 @@
-# Automatic PR Review System
+# ReflexiCode Guard
 
-First-week local prototype for the team project. It establishes the shared PR
-contracts, independent module boundaries, and an offline end-to-end demo.
+Automatic pull-request review with deterministic analysis, optional semantic
+review, and GitHub inline-comment publishing.
 
-## Structure
+## Components
 
-- `src/shared/`: the single source of truth for `PRContext`, `AnalysisFinding`,
-  `ReviewResult`, and common enums.
-- `src/context/`: loads optional plain-text repository guidance from
+- `src/shared/`: shared `PRContext`, `AnalysisFinding`, `ReviewResult`, and
+  severity/category/status enums.
+- `src/context/`: reads optional plain-text repository guidance from
   `.reviewrules`.
-- `src/analysis/`: AST parsing, changed-line localization, deterministic static rules, security vulnerability checks, complexity analysis, finding normalization, and evaluation benchmarking.
-- `src/llm/`: optional local Ollama reviewer, defaulting to
-  `qwen2.5-coder:7b`.
-- `src/github/`: joins the modules into a `PRContext` to `ReviewResult`
-  pipeline. It does not call GitHub yet.
-- `scripts/demo.py`: constructs a sample PR locally and prints JSON output.
-- `scripts/run_evaluation.py`: executes benchmark evaluation suite and generates machine-readable metrics.
+- `src/analysis/`: parses unified diffs and checks changed Python lines with
+  deterministic static, security, and complexity rules.
+- `src/llm/`: constructs review context and prompts, validates Ollama or mock
+  responses, and evaluates semantic findings.
+- `src/github/pipeline.py`: local pipeline returning the shared `ReviewResult`.
+- `src/github/`: GitHub collection, comment mapping, duplicate filtering,
+  dry-run output, and optional review publishing.
 
-## Run
+The GitHub integration uses transport-specific PR/comment models at its API
+boundary. Findings and analysis are normalized to the shared contracts before
+they are passed to the review pipeline and publisher.
 
-Requires Python 3.9+ and standard library.
+## Setup and tests
+
+Python 3.11+ is required. Install dependencies and run the full suite:
 
 ```powershell
+python -m pip install -r requirements.txt
+python -m pytest -q
 python -m unittest discover -s tests
-python -m scripts.run_evaluation
-python -m scripts.demo
 ```
 
-To include semantic review, start Ollama and make the selected model available,
-then run:
+The suite includes offline mock-provider and mocked-GitHub tests; it does not
+require an Ollama service or GitHub credentials.
+
+Run the local demo and analyzer evaluation with:
 
 ```powershell
-python -m scripts.demo --ollama
+python -m scripts.demo
+python -m scripts.run_evaluation
 ```
 
-The offline demo uses the same pipeline and contracts. If the optional Ollama
-reviewer is unavailable, static findings are retained and the result is marked
-`partial`.
+## GitHub CLI
 
-## Module handoff
+The default is a read-only dry run. Supply a token only when reading private
+repositories or explicitly publishing comments.
 
-All modules accept and return the shared models from `src/shared/models.py`;
-do not define module-specific copies.
+```powershell
+python -m src.github --owner OWNER --repo REPOSITORY --pr-number NUMBER --dry-run --use-mock-llm
+```
 
-| Module | Entry point | Input | Output |
-| --- | --- | --- | --- |
-| Context | `load_repository_rules(root)` | Repository root | Rule text or empty string |
-| Analysis | `analyze_pr(context)` | `PRContext` | `list[AnalysisFinding]` |
-| LLM | `OllamaReviewer.review(context, findings, rules)` | Shared context/findings and rules | Combined findings |
-| Integration | `review_pr(context, root, reviewer)` | `PRContext` and optional reviewer | `ReviewResult` |
+Publishing requires a token with pull-request write permission and an explicit
+`--publish` flag:
 
-### Member 2: Analysis Engine Details
+```powershell
+$env:GITHUB_TOKEN = "..."
+python -m src.github --owner OWNER --repo REPOSITORY --pr-number NUMBER --publish
+```
 
-The analysis engine evaluates unified PR diffs and isolates findings specifically to added and modified lines:
+GitHub Actions runs tests and the review in dry-run mode; it does not publish
+comments automatically. See [docs/member1_github.md](docs/member1_github.md) for
+configuration and [docs/member3_llm.md](docs/member3_llm.md) for semantic-review
+details.
 
-- **AST & Diff Parsing**: Parses Git unified diff hunks, tracks line numbering accurately across added/deleted/renamed files, and parses AST fragments safely with fallback token scanning.
-- **Deterministic Static Rules**: Bare except handlers (`DEF001`), broad exceptions / empty handlers (`DEF002`), mutable default arguments (`DEF003`), unreachable code detection (`DEF004`), singleton comparisons (`DEF005`), duplicate dictionary keys (`DEF006`), literal identity checks (`DEF007`), production print statements (`DEF008`), and tuple assertions (`DEF009`).
-- **Security Checks**: Dynamic code execution (`eval`/`exec`, `SEC001`), shell injection (`os.system`/`os.popen`/`subprocess` with `shell=True`, `SEC002`), insecure deserialization (`pickle`/`marshal`/`shelve`, `SEC003`), insecure temporary files (`tempfile.mktemp`, `SEC004`), hardcoded credentials/AWS keys/tokens with secret masking in logs (`SEC005`), SQL injection in query calls (`SEC006`), directory traversal in archive extraction (`SEC007`), and weak hashing (`SEC008`).
-- **Complexity Analysis**: McCabe cyclomatic complexity calculation (`CMP001`) and parameter count limits (`CMP002`).
-- **Finding Normalization & Deduplication**: Canonical formatting into `AnalysisFinding` with deterministic sorting and stable deduplication.
-- **Evaluation & Reproducibility**: `src/analysis/evaluation.py` calculates precision, recall, F1 score, and line localization accuracy against ground-truth benchmarks.
+## Analysis and evaluation
 
-### Member 3: Semantic Review
-
-The optional semantic-review module provides validated context construction,
-prompt generation, Ollama and mock providers, response parsing, and evaluation
-helpers. See [docs/member3_llm.md](docs/member3_llm.md) for module details.
+The deterministic analyzer localizes findings to added or modified lines and
+normalizes/deduplicates findings using the shared `AnalysisFinding` schema.
+Its rules cover common Python defects, security risks, and complexity. Run
+`python -m scripts.run_evaluation` to calculate benchmark precision, recall,
+F1, and localization results.
