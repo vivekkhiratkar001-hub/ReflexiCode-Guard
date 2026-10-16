@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from src.github.client import GitHubClient
+from src.github.adapters import normalize_analysis_findings
 from src.github.collector import PullRequestCollector, prepare_review_inputs
 from src.github.config import build_config
 from src.github.diff import parse_patch
@@ -118,6 +119,29 @@ def test_prepare_review_inputs_skips_binary_and_missing_patches() -> None:
     assert any("logo.png" in item for item in skipped)
     assert any("notes.bin" in item for item in skipped)
     assert "logo.png" not in patches
+
+
+def test_analysis_fixture_fields_adapt_to_shared_contract() -> None:
+    finding = normalize_analysis_findings(
+        [
+            {
+                "file": "src/app.py",
+                "line": 4,
+                "category": "Security",
+                "severity": "High",
+                "message": "Potential injection.",
+                "rule": "SQLI-001",
+                "evidence": "query = build_query(user_input)",
+            }
+        ]
+    )[0]
+
+    assert finding.file_path == "src/app.py"
+    assert finding.line_number == 4
+    assert finding.category == "Security"
+    assert finding.severity == "High"
+    assert finding.evidence == "query = build_query(user_input)"
+    assert finding.suggestion == ""
 
 
 def test_pr_metadata_and_changed_files_from_client() -> None:

@@ -113,10 +113,14 @@ The review context is built in ReviewContextBuilder and contains the information
 - issue context
 - changed code
 - changed lines
+- optional exact changed-line content for line-specific evidence checks
 - repository rules
 - AST/static-analysis findings
 
 This is stored in ReviewContext, which is then used by the prompt builder and pipeline.
+When GitHub patches provide exact line text, the parser requires evidence to
+match the reported changed line (or supplied static-analysis evidence), not just
+somewhere else in the diff.
 
 These inputs are useful because the model needs both the intent of the PR and the concrete code being changed. The repository rules and static-analysis findings provide guardrails and supporting evidence, while the changed code tells the model what is relevant.
 

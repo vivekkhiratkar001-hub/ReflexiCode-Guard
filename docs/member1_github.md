@@ -22,9 +22,11 @@ PullRequestCollector (metadata + changed files)
         ↓
 Diff parser (added / modified / renamed / deleted / missing patch)
         ↓
-Member 2 adapters (rules + static analysis, or empty stand-ins)
+Shared PRContext + repository rules + Member 2 analysis
         ↓
-ReviewContextBuilder  →  ReviewPipeline (Member 3)
+ReviewContextBuilder → ReviewPipeline (Member 3)
+        ↓
+Shared ReviewResult
         ↓
 FindingCommentMapper (only valid diff lines)
         ↓
@@ -44,7 +46,7 @@ ReviewSummary
 | `src/github/comments.py` | Publish comments and skip duplicates |
 | `src/github/orchestrator.py` | End-to-end flow |
 | `src/github/cli.py` | `python -m src.github` entry point |
-| `src/github/adapters.py` | Temporary Member 2 file/null providers |
+| `src/github/adapters.py` | Adapters between GitHub models and shared contracts |
 | `src/github/config.py` | Environment / CLI / Actions configuration |
 | `.github/workflows/pr-review.yml` | Tests + review job |
 
@@ -54,9 +56,9 @@ ReviewSummary
 2. Fetch PR title, body, branches, and head SHA.
 3. Fetch changed files (paginated). Skip binary files and files without a patch.
 4. Parse unified diffs. Build `changed_code` and `changed_lines` for Member 3 from **added** lines (or deleted lines for removed files).
-5. Load repository rules and static-analysis findings if JSON files are provided. Otherwise pass empty lists.
-6. Call `ReviewPipeline.review(context)` and keep Member 3's validation unchanged.
-7. Map each `ReviewFinding` to a GitHub `RIGHT` or `LEFT` diff line. Unmapped findings go into the summary only.
+5. Load `.reviewrules` or configured JSON rules, then run the shared deterministic analyzer (an explicit analysis fixture can override it).
+6. Adapt the result to Member 3's `ReviewContext`; validate the response, combine semantic and static findings, and return the shared `ReviewResult`.
+7. Map publishable findings to a GitHub `RIGHT` or `LEFT` diff line. Findings without a valid source location or evidence are reported but not published.
 8. Skip comments whose fingerprint already exists on the pull request.
 9. In dry-run mode, print the comments and do **not** call the GitHub write API.
 10. In publish mode, create one GitHub pull-request review with the new inline comments.

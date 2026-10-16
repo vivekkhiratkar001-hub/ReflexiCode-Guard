@@ -9,7 +9,7 @@ Pydantic model that can be dumped to a mapping.
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator
 
 
 class ReviewContext(BaseModel):
@@ -24,6 +24,9 @@ class ReviewContext(BaseModel):
     repository_rules: list[dict[str, Any]] = Field(default_factory=list)
     analysis_findings: list[dict[str, Any]] = Field(default_factory=list)
     changed_lines: dict[StrictStr, list[int]] | None = None
+    changed_line_content: dict[StrictStr, dict[StrictInt, StrictStr]] = Field(
+        default_factory=dict
+    )
 
     @field_validator("changed_code")
     @classmethod
@@ -60,6 +63,7 @@ class ReviewContextBuilder:
         repository_rules: Sequence[Any] | None = None,
         analysis_findings: Sequence[Any] | None = None,
         changed_lines: Mapping[str, Sequence[int]] | None = None,
+        changed_line_content: Mapping[str, Mapping[int, str]] | None = None,
     ) -> ReviewContext:
         """Normalize provided inputs without fetching or inventing context."""
         rules = [
@@ -75,6 +79,9 @@ class ReviewContextBuilder:
             if changed_lines is not None
             else None
         )
+        line_content = {
+            path: dict(lines) for path, lines in (changed_line_content or {}).items()
+        }
         return ReviewContext(
             pr_title=pr_title,
             pr_description=pr_description,
@@ -83,4 +90,5 @@ class ReviewContextBuilder:
             repository_rules=rules,
             analysis_findings=findings,
             changed_lines=line_map,
+            changed_line_content=line_content,
         )

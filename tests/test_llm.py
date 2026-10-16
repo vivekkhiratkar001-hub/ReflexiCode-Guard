@@ -199,6 +199,21 @@ class ReviewResponseParserTests(unittest.TestCase):
                 context,
             )
 
+    def test_evidence_must_match_exact_changed_line_when_line_content_is_available(self) -> None:
+        context = ReviewContextBuilder().build(
+            pr_title="Fix math behavior",
+            changed_code={FILE: "def add(a, b):\n    total = a + b\n    return total"},
+            repository_rules=[],
+            analysis_findings=[],
+            changed_lines={FILE: [3]},
+            changed_line_content={FILE: {3: "    return total"}},
+        )
+        with self.assertRaisesRegex(ReviewResponseError, "does not match the changed line"):
+            self.parser.parse(
+                response_for(finding_data(line=3, evidence="total = a + b")),
+                context,
+            )
+
     def test_analysis_finding_can_support_valid_evidence(self) -> None:
         context = ReviewContextBuilder().build(
             pr_title="Fix math behavior",

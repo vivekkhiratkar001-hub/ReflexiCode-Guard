@@ -21,6 +21,9 @@ The GitHub integration uses transport-specific PR/comment models at its API
 boundary. Findings and analysis are normalized to the shared contracts before
 they are passed to the review pipeline and publisher.
 
+Branch selection and the Member 4 integration boundary are documented in
+[docs/integration-notes.md](docs/integration-notes.md).
+
 ## Setup and tests
 
 Python 3.11+ is required. Install dependencies and run the full suite:

@@ -21,9 +21,20 @@ def review_pr(
     context: PRContext,
     repository_root: Union[str, Path] = ".",
     reviewer: Optional[Reviewer] = None,
+    *,
+    repository_rules: Optional[str] = None,
+    initial_findings: Optional[List[AnalysisFinding]] = None,
 ) -> ReviewResult:
-    findings = analyze_pr(context)
-    rules = load_repository_rules(repository_root)
+    findings = (
+        list(initial_findings)
+        if initial_findings is not None
+        else analyze_pr(context)
+    )
+    rules = (
+        load_repository_rules(repository_root)
+        if repository_rules is None
+        else repository_rules
+    )
     status = ReviewStatus.COMPLETE
     reviewer_error: Optional[str] = None
     if reviewer is not None:

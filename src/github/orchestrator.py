@@ -2,19 +2,28 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Sequence
+from pathlib import Path
+
+from pydantic import ValidationError
 
 from src.llm.context import ReviewContextBuilder
-from src.llm.parser import ReviewResponseError
 from src.llm.pipeline import ReviewPipeline
 from src.llm.schemas import ReviewFinding
+from src.shared.enums import ReviewStatus
+from src.shared.models import AnalysisFinding, PRContext
 
 from .adapters import (
-    NullRepositoryRulesProvider,
-    NullStaticAnalysisProvider,
+    LocalRepositoryRulesProvider,
+    SharedContractReviewer,
+    SharedStaticAnalysisProvider,
     RepositoryRulesProvider,
     StaticAnalysisProvider,
+    build_changed_line_content,
+    build_shared_pr_context,
+    normalize_analysis_findings,
 )
 from .client import GitHubClient
 from .collector import PullRequestCollector, prepare_review_inputs
@@ -22,6 +31,7 @@ from .comments import ReviewPublisher
 from .exceptions import GitHubIntegrationError
 from .mapper import FindingCommentMapper
 from .models import InlineComment, PullRequestInfo, ReviewSummary
+from .pipeline import review_pr as run_shared_review
 
 
 class ReviewOrchestrator:
@@ -36,14 +46,16 @@ class ReviewOrchestrator:
         analysis_provider: StaticAnalysisProvider | None = None,
         publisher: ReviewPublisher | None = None,
         context_builder: ReviewContextBuilder | None = None,
+        repository_root: Path = Path("."),
         dry_run: bool = True,
     ) -> None:
         self.client = client
         self.pipeline = pipeline
-        self.rules_provider = rules_provider or NullRepositoryRulesProvider()
-        self.analysis_provider = analysis_provider or NullStaticAnalysisProvider()
+        self.rules_provider = rules_provider or LocalRepositoryRulesProvider(repository_root)
+        self.analysis_provider = analysis_provider or SharedStaticAnalysisProvider()
         self.publisher = publisher or ReviewPublisher(client)
-        self.context_builder = context_builder or ReviewContextBuilder()
+        self.context_builder = context_builder
+        self.repository_root = repository_root
         self.dry_run = dry_run
         self.collector = PullRequestCollector(client)
 
@@ -77,34 +89,96 @@ class ReviewOrchestrator:
 
         try:
             rules = self.rules_provider.get_rules(pr)
-            analysis = self.analysis_provider.get_findings(pr, files, changed_code)
-        except Exception as exc:  # noqa: BLE001 - adapters must not crash the run
+            analysis = normalize_analysis_findings(
+                self.analysis_provider.get_findings(pr, files, changed_code)
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             summary.errors.append(f"Supporting context provider failed: {exc}")
             rules, analysis = [], []
             summary.warnings.append(
                 "Continuing without repository rules and/or static-analysis findings."
             )
 
-        context = self.context_builder.build(
-            pr_title=pr.title,
-            pr_description=pr.body,
-            issue_context="",
-            changed_code=changed_code,
-            repository_rules=rules,
-            analysis_findings=analysis,
-            changed_lines=changed_lines,
+        shared_context = build_shared_pr_context(pr, files)
+        review_result = run_shared_review(
+            shared_context,
+            repository_root=self.repository_root,
+            reviewer=SharedContractReviewer(
+                self.pipeline,
+                changed_code,
+                changed_lines,
+                build_changed_line_content(files, patches),
+                self.context_builder,
+            ),
+            repository_rules=json.dumps(rules, ensure_ascii=False),
+            initial_findings=analysis,
         )
-
-        try:
-            findings: Sequence[ReviewFinding] = self.pipeline.review(context)
-        except ReviewResponseError as exc:
-            summary.errors.append(f"Member 3 rejected the model response: {exc}")
-            findings = []
-        except Exception as exc:  # noqa: BLE001 - surface provider failures in the summary
-            summary.errors.append(f"Review pipeline failed: {exc}")
-            findings = []
+        if review_result.status is ReviewStatus.PARTIAL:
+            summary.errors.append(review_result.summary)
+        findings = self._to_publishable_findings(review_result.findings, summary)
 
         return self._complete(pr, files, patches, findings, summary)
+
+    @staticmethod
+    def _to_publishable_findings(
+        findings: Sequence[AnalysisFinding],
+        summary: ReviewSummary,
+    ) -> list[ReviewFinding]:
+        severity_names = {
+            "low": "Low",
+            "medium": "Medium",
+            "high": "High",
+            "critical": "Critical",
+        }
+        category_names = {
+            "security": "Security",
+            "static_analysis": "Static Analysis",
+            "semantic": "Semantic",
+        }
+        converted: list[ReviewFinding] = []
+        for finding in findings:
+            if finding.line_number is None or finding.line_number < 1:
+                summary.unmapped_findings.append(
+                    f"{finding.file_path}:{finding.line_number} ({finding.category})"
+                )
+                continue
+            if not finding.evidence.strip():
+                summary.unmapped_findings.append(
+                    f"{finding.file_path}:{finding.line_number} "
+                    f"({finding.category}; missing evidence)"
+                )
+                continue
+            severity = severity_names.get(finding.severity.casefold())
+            if severity is None:
+                summary.errors.append(
+                    f"Finding {finding.file_path}:{finding.line_number} has unsupported "
+                    f"severity {finding.severity!r} and was not published."
+                )
+                continue
+            category = category_names.get(
+                finding.category.casefold(),
+                finding.category.replace("_", " ").title(),
+            )
+            try:
+                converted.append(
+                    ReviewFinding.model_validate(
+                        {
+                            "file": finding.file_path,
+                            "line": finding.line_number,
+                            "category": category,
+                            "severity": severity,
+                            "message": finding.message,
+                            "evidence": finding.evidence,
+                            "suggestion": finding.suggestion or None,
+                        }
+                    )
+                )
+            except ValidationError as error:
+                summary.errors.append(
+                    f"Invalid shared finding {finding.file_path}:{finding.line_number}: "
+                    f"{error}"
+                )
+        return converted
 
     def _complete(
         self,
@@ -118,7 +192,7 @@ class ReviewOrchestrator:
         summary.findings_by_severity = dict(Counter(item.severity for item in findings))
 
         comments, unmapped = FindingCommentMapper(files, patches).map_findings(findings)
-        summary.unmapped_findings = unmapped
+        summary.unmapped_findings.extend(unmapped)
         summary.intended_comments = list(comments)
 
         try:

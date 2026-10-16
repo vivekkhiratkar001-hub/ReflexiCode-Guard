@@ -94,8 +94,53 @@ def test_orchestrator_runs_member3_pipeline_in_dry_run() -> None:
     assert summary.comments_published == 0
     assert summary.unmapped_findings == []
     assert summary.head_sha == "deadbeef"
+    assert "**[High] Bug**" in summary.intended_comments[0].body
     assert "DRY RUN" in summary.to_markdown()
     assert "Comments that would be published: 1" in summary.to_markdown()
+
+
+def test_orchestrator_publishes_shared_static_findings_and_deduplicates_llm() -> None:
+    session = _session(
+        files=[
+            {
+                "filename": "src/risky.py",
+                "status": "added",
+                "patch": "@@ -0,0 +1,1 @@\n+value = eval(user_input)\n",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+            }
+        ]
+    )
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    response = json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/risky.py",
+                    "line": 1,
+                    "category": "Security",
+                    "severity": "High",
+                    "message": "Dynamic evaluation duplicates the static security finding.",
+                    "evidence": "value = eval(user_input)",
+                    "suggestion": "Avoid evaluating untrusted input.",
+                }
+            ]
+        }
+    )
+
+    summary = ReviewOrchestrator(
+        client,
+        ReviewPipeline(MockProvider(response)),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.total_findings == 1
+    assert summary.findings_by_severity == {"High": 1}
+    assert summary.comments_intended == 1
+    assert summary.intended_comments[0].path == "src/risky.py"
+    assert summary.intended_comments[0].line == 1
+    assert "eval(user_input)" in summary.intended_comments[0].body
 
 
 def test_orchestrator_does_not_call_write_api_in_dry_run() -> None:

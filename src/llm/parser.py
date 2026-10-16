@@ -145,6 +145,18 @@ def validate_evidence(finding: ReviewFinding, context: ReviewContext) -> None:
             f"Finding evidence for {finding.file}:{finding.line} is too weak or generic to support the claim."
         )
 
+    line_lookup = _canonical_file_lookup(context.changed_line_content)
+    line_content = line_lookup.get(_normalize_path(finding.file), {})
+    exact_line = line_content.get(finding.line)
+    if exact_line is not None:
+        if _normalized(finding.evidence) in _normalized(exact_line):
+            return
+        if _analysis_matches_finding(finding, context.analysis_findings):
+            return
+        raise ReviewResponseError(
+            f"Finding evidence for {finding.file}:{finding.line} does not match the changed line."
+        )
+
     if not context.changed_code:
         return
     file_lookup = _canonical_file_lookup(context.changed_code)
