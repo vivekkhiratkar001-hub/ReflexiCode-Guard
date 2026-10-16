@@ -1,0 +1,8 @@
+diff --git a/src/settings.py b/src/settings.py
+--- a/src/settings.py
++++ b/src/settings.py
+@@ -3,3 +3,4 @@
+ API_KEY = "old-prod-key-123"
+ C = 3
+ D = 4
++E = 5

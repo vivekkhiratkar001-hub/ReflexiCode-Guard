@@ -1,0 +1,15 @@
+{
+  "action": "opened",
+  "repository": {"full_name": "demo-org/demo-repo"},
+  "pull_request": {
+    "number": 7,
+    "title": "Add login helper",
+    "body": "Adds a login helper.\n\nFixes #3",
+    "draft": false,
+    "user": {"login": "student1"},
+    "head": {"ref": "feature/login", "sha": "abc1234def5678abc1234def5678abc1234def56",
+             "repo": {"full_name": "demo-org/demo-repo"}},
+    "base": {"ref": "main", "sha": "111222333444555666777888999000aaabbbccc",
+             "repo": {"full_name": "demo-org/demo-repo"}}
+  }
+}

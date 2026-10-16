@@ -1,0 +1,10 @@
+diff --git a/src/db.py b/src/db.py
+--- a/src/db.py
++++ b/src/db.py
+@@ -1,2 +1,6 @@
+ def conn():
+     return None
++
++def find(cur, uid):
++    cur.execute(f"SELECT * FROM users WHERE id = {uid}")
++    return cur.fetchone()

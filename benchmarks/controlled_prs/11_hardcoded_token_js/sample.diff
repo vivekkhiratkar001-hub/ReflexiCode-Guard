@@ -1,0 +1,6 @@
+diff --git a/web/gh.js b/web/gh.js
+--- a/web/gh.js
++++ b/web/gh.js
+@@ -1 +1,2 @@
+ export const base = 'https://api.github.com';
++const token = "ghp_abcdefghijklmnop";

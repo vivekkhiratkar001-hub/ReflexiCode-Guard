@@ -1,0 +1,11 @@
+diff --git a/src/api.py b/src/api.py
+--- a/src/api.py
++++ b/src/api.py
+@@ -2,3 +2,7 @@
+ 
+ def health():
+     return 'ok'
++
++def calc():
++    result = eval(request.args['expr'])
++    return str(result)

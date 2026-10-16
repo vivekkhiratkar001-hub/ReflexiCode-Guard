@@ -1,0 +1,8 @@
+diff --git a/src/config.py b/src/config.py
+--- a/src/config.py
++++ b/src/config.py
+@@ -3,3 +3,4 @@
+ DEBUG = False
+ HOST = os.environ.get('HOST', 'localhost')
+ PORT = 5432
++DB_PASSWORD = "hunter2-prod"

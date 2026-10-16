@@ -1,0 +1,7 @@
+{
+  "_comment": "Analyzer list. 'demo_static' and 'mock_llm' are STAND-INS. Replace/add with 'module:function' specs from M1, M2, M3.",
+  "analyzers": ["demo_static", "mock_llm"],
+  "max_findings": 25,
+  "llm_provider": "mock",
+  "protected_bases": ["main", "master", "develop"]
+}

@@ -1,0 +1,22 @@
+{
+  "tool_version": "0.1.0",
+  "python": "3.13.16",
+  "platform": "Linux-6.18.44-fc-v139-x86_64-with-glibc2.39",
+  "generated_at_utc": "2026-10-16T05:18:20Z",
+  "repeats": 5,
+  "benchmark_dir": "benchmarks/controlled_prs",
+  "benchmark_hash": "f5eddeb760ccdf8d",
+  "code_hash": "89b3f9697b1f0733",
+  "n_cases": 13,
+  "n_truth_defects": 13,
+  "n_clean_prs": 3,
+  "variants": [
+    "A_hunk_baseline",
+    "B_static_only",
+    "C_static+mockLLM",
+    "D_noisyLLM_no_gate",
+    "E1_noisyLLM_schema+diff",
+    "E2_noisyLLM_full_gate"
+  ],
+  "reproduce_with": "python -m reflexicode_guard.e2e_runner --bench benchmarks/controlled_prs --out results/latest --repeats 5"
+}

@@ -1,0 +1,94 @@
+name: ReflexiCode-Guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, master, develop]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review manually (leave empty to only run the regression job)"
+        required: false
+        type: string
+      dry_run:
+        description: "Do not post comments; only write findings.json"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+# Least privilege: read code, write PR review comments only. Do not switch the trigger to the "_target" variant:
+# that variant runs untrusted fork code with a write token.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: reflexicode-guard-${{ github.event.pull_request.number || github.event.inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  LLM_PROVIDER: mock           # "ollama" needs a self-hosted runner (M3); keep mock for hosted runners.
+
+jobs:
+  regression:
+    name: Tests + benchmark regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Run regression gate
+        run: ./scripts/regression.sh results/ci
+      - name: Upload evaluation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reflexicode-eval-${{ github.run_id }}
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  review:
+    name: PR review
+    needs: regression
+    # Skip drafts. Manual runs only review when a PR number is supplied.
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.pr_number != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history so AST/rule modules (M1/M2) can diff against base
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}", cache: pip }
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Review (pull_request event)
+        if: github.event_name == 'pull_request'
+        run: python -m reflexicode_guard --output findings.json
+      - name: Review (manual PR number)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          EXTRA=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then EXTRA="--dry-run"; fi
+          python -m reflexicode_guard --pr "${{ github.event.inputs.pr_number }}" --force $EXTRA --output findings.json
+      - name: Upload findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reflexicode-findings-${{ github.run_id }}
+          path: findings.json
+          if-no-files-found: ignore

@@ -1,0 +1,10 @@
+diff --git a/src/proc.py b/src/proc.py
+--- a/src/proc.py
++++ b/src/proc.py
+@@ -1,2 +1,5 @@
+ def run(items):
+-    return len(items)
++    out = []
++    for i in range(len(items) + 1):
++        out.append(items[i])
++    return out

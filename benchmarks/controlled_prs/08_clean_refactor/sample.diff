@@ -1,0 +1,13 @@
+diff --git a/src/util.py b/src/util.py
+--- a/src/util.py
++++ b/src/util.py
+@@ -1,5 +1,8 @@
+ def evaluate_score(x):
+-    return eval(x)
++    return int(x)
+ 
+ def get_token():
+     return 'a'
++
++token = get_token()
++password_hash = hash(token)

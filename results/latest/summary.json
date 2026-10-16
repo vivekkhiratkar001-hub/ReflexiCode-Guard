@@ -1,0 +1,248 @@
+{
+  "A_hunk_baseline": {
+    "description": "Naive baseline: scans whole hunk, reports hunk start (hunk-level localization)",
+    "metrics": {
+      "line": {
+        "tp": 0,
+        "fp": 8,
+        "fn": 13,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "hunk": {
+        "tp": 6,
+        "fp": 2,
+        "fn": 6,
+        "precision": 0.75,
+        "recall": 0.5,
+        "f1": 0.6
+      },
+      "fpr": 0.1404,
+      "negatives": 57
+    },
+    "would_422_total": 0,
+    "gate_drops": {
+      "invalid_schema": 0,
+      "off_diff": 0,
+      "evidence_mismatch": 0,
+      "duplicates": 0
+    },
+    "reproducible": true,
+    "result_hash": "7dfd055584b94282",
+    "timing_ms": {
+      "repeats": 5,
+      "pass_median": 0.944,
+      "pass_min": 0.816,
+      "pass_max": 1.081,
+      "per_pr_median": 0.033,
+      "per_pr_p95": 0.068
+    },
+    "fresh_process_match": true
+  },
+  "B_static_only": {
+    "description": "Line-level deterministic static rules only",
+    "metrics": {
+      "line": {
+        "tp": 7,
+        "fp": 1,
+        "fn": 6,
+        "precision": 0.875,
+        "recall": 0.5385,
+        "f1": 0.6667
+      },
+      "hunk": {
+        "tp": 7,
+        "fp": 1,
+        "fn": 6,
+        "precision": 0.875,
+        "recall": 0.5385,
+        "f1": 0.6667
+      },
+      "fpr": 0.0175,
+      "negatives": 57
+    },
+    "would_422_total": 0,
+    "gate_drops": {
+      "invalid_schema": 0,
+      "off_diff": 0,
+      "evidence_mismatch": 0,
+      "duplicates": 0
+    },
+    "reproducible": true,
+    "result_hash": "7b29c4238e152d50",
+    "timing_ms": {
+      "repeats": 5,
+      "pass_median": 0.684,
+      "pass_min": 0.625,
+      "pass_max": 0.74,
+      "per_pr_median": 0.024,
+      "per_pr_p95": 0.046
+    },
+    "fresh_process_match": true
+  },
+  "C_static+mockLLM": {
+    "description": "Static + clean mock LLM (no hallucination), full gate",
+    "metrics": {
+      "line": {
+        "tp": 11,
+        "fp": 1,
+        "fn": 2,
+        "precision": 0.9167,
+        "recall": 0.8462,
+        "f1": 0.88
+      },
+      "hunk": {
+        "tp": 11,
+        "fp": 1,
+        "fn": 2,
+        "precision": 0.9167,
+        "recall": 0.8462,
+        "f1": 0.88
+      },
+      "fpr": 0.0175,
+      "negatives": 57
+    },
+    "would_422_total": 0,
+    "gate_drops": {
+      "invalid_schema": 0,
+      "off_diff": 0,
+      "evidence_mismatch": 0,
+      "duplicates": 0
+    },
+    "reproducible": true,
+    "result_hash": "4df7740f73442179",
+    "timing_ms": {
+      "repeats": 5,
+      "pass_median": 0.833,
+      "pass_min": 0.764,
+      "pass_max": 0.868,
+      "per_pr_median": 0.034,
+      "per_pr_p95": 0.067
+    },
+    "fresh_process_match": true
+  },
+  "D_noisyLLM_no_gate": {
+    "description": "Static + mock LLM + SIMULATED hallucinations, validation gates OFF",
+    "metrics": {
+      "line": {
+        "tp": 11,
+        "fp": 45,
+        "fn": 2,
+        "precision": 0.1964,
+        "recall": 0.8462,
+        "f1": 0.3188
+      },
+      "hunk": {
+        "tp": 32,
+        "fp": 24,
+        "fn": 0,
+        "precision": 0.5714,
+        "recall": 1.0,
+        "f1": 0.7273
+      },
+      "fpr": 0.5263,
+      "negatives": 57
+    },
+    "would_422_total": 15,
+    "gate_drops": {
+      "invalid_schema": 0,
+      "off_diff": 0,
+      "evidence_mismatch": 0,
+      "duplicates": 0
+    },
+    "reproducible": true,
+    "result_hash": "20edb3dca37470e7",
+    "timing_ms": {
+      "repeats": 5,
+      "pass_median": 1.569,
+      "pass_min": 1.494,
+      "pass_max": 1.654,
+      "per_pr_median": 0.059,
+      "per_pr_p95": 0.126
+    },
+    "fresh_process_match": true
+  },
+  "E1_noisyLLM_schema+diff": {
+    "description": "Same, with evidence-schema + diff-line gates only",
+    "metrics": {
+      "line": {
+        "tp": 11,
+        "fp": 19,
+        "fn": 2,
+        "precision": 0.3667,
+        "recall": 0.8462,
+        "f1": 0.5116
+      },
+      "hunk": {
+        "tp": 24,
+        "fp": 6,
+        "fn": 0,
+        "precision": 0.8,
+        "recall": 1.0,
+        "f1": 0.8889
+      },
+      "fpr": 0.3333,
+      "negatives": 57
+    },
+    "would_422_total": 0,
+    "gate_drops": {
+      "invalid_schema": 15,
+      "off_diff": 15,
+      "evidence_mismatch": 0,
+      "duplicates": 0
+    },
+    "reproducible": true,
+    "result_hash": "ee5d5c783721bcfb",
+    "timing_ms": {
+      "repeats": 5,
+      "pass_median": 1.338,
+      "pass_min": 1.282,
+      "pass_max": 1.429,
+      "per_pr_median": 0.056,
+      "per_pr_p95": 0.117
+    },
+    "fresh_process_match": true
+  },
+  "E2_noisyLLM_full_gate": {
+    "description": "Same, with all gates incl. deterministic evidence verification (proposed)",
+    "metrics": {
+      "line": {
+        "tp": 11,
+        "fp": 16,
+        "fn": 2,
+        "precision": 0.4074,
+        "recall": 0.8462,
+        "f1": 0.55
+      },
+      "hunk": {
+        "tp": 23,
+        "fp": 4,
+        "fn": 0,
+        "precision": 0.8519,
+        "recall": 1.0,
+        "f1": 0.92
+      },
+      "fpr": 0.2807,
+      "negatives": 57
+    },
+    "would_422_total": 0,
+    "gate_drops": {
+      "invalid_schema": 15,
+      "off_diff": 15,
+      "evidence_mismatch": 15,
+      "duplicates": 0
+    },
+    "reproducible": true,
+    "result_hash": "dddeb61d6ef4097b",
+    "timing_ms": {
+      "repeats": 5,
+      "pass_median": 1.279,
+      "pass_min": 1.195,
+      "pass_max": 1.364,
+      "per_pr_median": 0.056,
+      "per_pr_p95": 0.112
+    },
+    "fresh_process_match": true
+  }
+}

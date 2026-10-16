@@ -1,0 +1,11 @@
+{
+  "case": "11_hardcoded_token_js",
+  "defects": [
+    {
+      "file": "web/gh.js",
+      "line": 2,
+      "rule": "SEC001",
+      "kind": "detectable"
+    }
+  ]
+}

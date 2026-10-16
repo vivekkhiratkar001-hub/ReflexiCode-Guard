@@ -1,0 +1,11 @@
+{
+  "case": "05_sql_fstring",
+  "defects": [
+    {
+      "file": "src/db.py",
+      "line": 5,
+      "rule": "SQL-INJ",
+      "kind": "detectable"
+    }
+  ]
+}

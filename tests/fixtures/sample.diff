@@ -1,0 +1,15 @@
+diff --git a/src/auth.py b/src/auth.py
+index 1111111..2222222 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1,5 +1,9 @@
+ import os
+ 
++API_KEY = "sk-live-1234567890"
++
+ def login(user, pw):
+-    return check(user, pw)
++    # TODO: add rate limiting
++    result = eval(user)
++    return check(user, pw)
+ 

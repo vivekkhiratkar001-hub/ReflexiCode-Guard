@@ -1,0 +1,17 @@
+{
+  "case": "12_two_issues_one_hunk",
+  "defects": [
+    {
+      "file": "src/admin.py",
+      "line": 3,
+      "rule": "SEC002",
+      "kind": "detectable"
+    },
+    {
+      "file": "src/admin.py",
+      "line": 4,
+      "rule": "STY001",
+      "kind": "detectable"
+    }
+  ]
+}

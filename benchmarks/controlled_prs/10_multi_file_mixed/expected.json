@@ -1,0 +1,23 @@
+{
+  "case": "10_multi_file_mixed",
+  "defects": [
+    {
+      "file": "src/export.py",
+      "line": 2,
+      "rule": "SEC001",
+      "kind": "detectable"
+    },
+    {
+      "file": "src/reader.py",
+      "line": 4,
+      "rule": "BARE-EXCEPT",
+      "kind": "detectable"
+    },
+    {
+      "file": "src/stats.py",
+      "line": 2,
+      "rule": "LOGIC-DIV-ZERO",
+      "kind": "semantic"
+    }
+  ]
+}

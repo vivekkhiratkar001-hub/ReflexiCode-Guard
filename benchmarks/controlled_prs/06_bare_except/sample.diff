@@ -1,0 +1,12 @@
+diff --git a/src/loader.py b/src/loader.py
+--- a/src/loader.py
++++ b/src/loader.py
+@@ -1,4 +1,7 @@
+ import json
+ 
+ def load(p):
+-    return json.load(open(p))
++    try:
++        return json.load(open(p))
++    except:
++        return {}

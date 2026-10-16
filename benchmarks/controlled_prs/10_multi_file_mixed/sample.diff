@@ -1,0 +1,24 @@
+diff --git a/src/export.py b/src/export.py
+--- a/src/export.py
++++ b/src/export.py
+@@ -1,2 +1,3 @@
+ def export():
++    api_key = "sk-test-abcdef123"
+     return 1
+diff --git a/src/reader.py b/src/reader.py
+--- a/src/reader.py
++++ b/src/reader.py
+@@ -1,2 +1,5 @@
+ def read(f):
+-    return f.read()
++    try:
++        return f.read()
++    except:
++        return ''
+diff --git a/src/stats.py b/src/stats.py
+--- a/src/stats.py
++++ b/src/stats.py
+@@ -1,2 +1,2 @@
+ def mean(xs):
+-    return 0
++    return sum(xs) / len(xs)

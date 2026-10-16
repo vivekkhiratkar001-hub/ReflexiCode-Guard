@@ -1,0 +1,29 @@
+{
+  "action": "opened",
+  "repository": {
+    "full_name": "demo-org/demo-repo"
+  },
+  "pull_request": {
+    "number": 102,
+    "title": "Add calculator endpoint",
+    "body": "Fixes #11",
+    "draft": false,
+    "user": {
+      "login": "student1"
+    },
+    "head": {
+      "ref": "feature/x",
+      "sha": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "repo": {
+        "full_name": "demo-org/demo-repo"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "sha": "1111111111111111111111111111111111111111",
+      "repo": {
+        "full_name": "demo-org/demo-repo"
+      }
+    }
+  }
+}

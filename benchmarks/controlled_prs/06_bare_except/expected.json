@@ -1,0 +1,11 @@
+{
+  "case": "06_bare_except",
+  "defects": [
+    {
+      "file": "src/loader.py",
+      "line": 6,
+      "rule": "BARE-EXCEPT",
+      "kind": "detectable"
+    }
+  ]
+}

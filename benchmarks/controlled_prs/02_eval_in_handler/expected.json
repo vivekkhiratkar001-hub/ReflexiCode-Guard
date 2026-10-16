@@ -1,0 +1,11 @@
+{
+  "case": "02_eval_in_handler",
+  "defects": [
+    {
+      "file": "src/api.py",
+      "line": 7,
+      "rule": "SEC002",
+      "kind": "detectable"
+    }
+  ]
+}

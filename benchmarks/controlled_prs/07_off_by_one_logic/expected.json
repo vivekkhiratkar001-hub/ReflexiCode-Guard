@@ -1,0 +1,11 @@
+{
+  "case": "07_off_by_one_logic",
+  "defects": [
+    {
+      "file": "src/proc.py",
+      "line": 3,
+      "rule": "LOGIC-OFF-BY-ONE",
+      "kind": "semantic"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "case": "03_todo_left",
+  "defects": [
+    {
+      "file": "src/validate.py",
+      "line": 2,
+      "rule": "STY001",
+      "kind": "detectable"
+    }
+  ]
+}

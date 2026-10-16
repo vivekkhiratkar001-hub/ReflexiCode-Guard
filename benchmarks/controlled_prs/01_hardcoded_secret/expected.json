@@ -1,0 +1,11 @@
+{
+  "case": "01_hardcoded_secret",
+  "defects": [
+    {
+      "file": "src/config.py",
+      "line": 6,
+      "rule": "SEC001",
+      "kind": "detectable"
+    }
+  ]
+}

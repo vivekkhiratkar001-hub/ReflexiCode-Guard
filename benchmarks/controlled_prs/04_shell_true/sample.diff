@@ -1,0 +1,10 @@
+diff --git a/src/backup.py b/src/backup.py
+--- a/src/backup.py
++++ b/src/backup.py
+@@ -2,3 +2,6 @@
+ 
+ def noop():
+     pass
++
++def backup(path):
++    subprocess.run('tar czf b.tgz ' + path, shell=True)

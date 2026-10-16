@@ -1,0 +1,7 @@
+diff --git a/src/validate.py b/src/validate.py
+--- a/src/validate.py
++++ b/src/validate.py
+@@ -1,2 +1,3 @@
+ def check(x):
++    # FIXME: validate input length
+     return x is not None

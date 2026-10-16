@@ -1,0 +1,665 @@
+{
+  "variant": "A_hunk_baseline",
+  "cases": [
+    {
+      "case": "01_hardcoded_secret",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 4,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 1,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/config.py",
+          "line": 6,
+          "kind": "detectable"
+        }
+      ],
+      "false_positives": [
+        {
+          "file": "src/config.py",
+          "line": 3
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/config.py",
+          "line": 3,
+          "severity": "critical",
+          "category": "security",
+          "message": "Hard-coded credential. Load it from an environment variable or secret store.",
+          "evidence": "DB_PASSWORD = \"hunter2-prod\"",
+          "source": "static",
+          "rule_id": "SEC001",
+          "confidence": 1.0,
+          "fingerprint": "820817a1c581"
+        }
+      ]
+    },
+    {
+      "case": "02_eval_in_handler",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 7,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 1,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/api.py",
+          "line": 7,
+          "kind": "detectable"
+        }
+      ],
+      "false_positives": [
+        {
+          "file": "src/api.py",
+          "line": 2
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/api.py",
+          "line": 2,
+          "severity": "high",
+          "category": "security",
+          "message": "Use of eval/exec on dynamic input is dangerous.",
+          "evidence": "result = eval(request.args['expr'])",
+          "source": "static",
+          "rule_id": "SEC002",
+          "confidence": 1.0,
+          "fingerprint": "1f146275fe93"
+        }
+      ]
+    },
+    {
+      "case": "03_todo_left",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 3,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 1,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/validate.py",
+          "line": 2,
+          "kind": "detectable"
+        }
+      ],
+      "false_positives": [
+        {
+          "file": "src/validate.py",
+          "line": 1
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/validate.py",
+          "line": 1,
+          "severity": "low",
+          "category": "style",
+          "message": "Unresolved TODO/FIXME in changed code.",
+          "evidence": "# FIXME: validate input length",
+          "source": "static",
+          "rule_id": "STY001",
+          "confidence": 1.0,
+          "fingerprint": "4a7e17b484f1"
+        }
+      ]
+    },
+    {
+      "case": "04_shell_true",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 1
+        },
+        "universe_lines": 6,
+        "fp_in_universe": 0,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 0,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 0,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/backup.py",
+          "line": 7,
+          "kind": "detectable"
+        }
+      ],
+      "false_positives": [],
+      "findings": []
+    },
+    {
+      "case": "05_sql_fstring",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 1
+        },
+        "universe_lines": 6,
+        "fp_in_universe": 0,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 0,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 0,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/db.py",
+          "line": 5,
+          "kind": "detectable"
+        }
+      ],
+      "false_positives": [],
+      "findings": []
+    },
+    {
+      "case": "06_bare_except",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 1
+        },
+        "universe_lines": 7,
+        "fp_in_universe": 0,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 0,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 0,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/loader.py",
+          "line": 6,
+          "kind": "detectable"
+        }
+      ],
+      "false_positives": [],
+      "findings": []
+    },
+    {
+      "case": "07_off_by_one_logic",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 1
+        },
+        "universe_lines": 5,
+        "fp_in_universe": 0,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 0,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 0,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/proc.py",
+          "line": 3,
+          "kind": "semantic"
+        }
+      ],
+      "false_positives": [],
+      "findings": []
+    },
+    {
+      "case": "08_clean_refactor",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 8,
+        "fp_in_universe": 0,
+        "truth_lines": 0
+      },
+      "stats": {
+        "raw": 0,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 0,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [],
+      "findings": []
+    },
+    {
+      "case": "09_preexisting_secret_in_context",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0
+        },
+        "universe_lines": 4,
+        "fp_in_universe": 1,
+        "truth_lines": 0
+      },
+      "stats": {
+        "raw": 1,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/settings.py",
+          "line": 3
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/settings.py",
+          "line": 3,
+          "severity": "critical",
+          "category": "security",
+          "message": "Hard-coded credential. Load it from an environment variable or secret store.",
+          "evidence": "API_KEY = \"old-prod-key-123\"",
+          "source": "static",
+          "rule_id": "SEC001",
+          "confidence": 1.0,
+          "fingerprint": "83d976cb3cab"
+        }
+      ]
+    },
+    {
+      "case": "10_multi_file_mixed",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 3
+        },
+        "hunk": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 2
+        },
+        "universe_lines": 10,
+        "fp_in_universe": 1,
+        "truth_lines": 3
+      },
+      "stats": {
+        "raw": 1,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/export.py",
+          "line": 2,
+          "kind": "detectable"
+        },
+        {
+          "file": "src/reader.py",
+          "line": 4,
+          "kind": "detectable"
+        },
+        {
+          "file": "src/stats.py",
+          "line": 2,
+          "kind": "semantic"
+        }
+      ],
+      "false_positives": [
+        {
+          "file": "src/export.py",
+          "line": 1
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/export.py",
+          "line": 1,
+          "severity": "critical",
+          "category": "security",
+          "message": "Hard-coded credential. Load it from an environment variable or secret store.",
+          "evidence": "api_key = \"sk-test-abcdef123\"",
+          "source": "static",
+          "rule_id": "SEC001",
+          "confidence": 1.0,
+          "fingerprint": "0489cc135b92"
+        }
+      ]
+    },
+    {
+      "case": "11_hardcoded_token_js",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 2,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 1,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "web/gh.js",
+          "line": 2,
+          "kind": "detectable"
+        }
+      ],
+      "false_positives": [
+        {
+          "file": "web/gh.js",
+          "line": 1
+        }
+      ],
+      "findings": [
+        {
+          "file": "web/gh.js",
+          "line": 1,
+          "severity": "critical",
+          "category": "security",
+          "message": "Hard-coded credential. Load it from an environment variable or secret store.",
+          "evidence": "const token = \"ghp_abcdefghijklmnop\";",
+          "source": "static",
+          "rule_id": "SEC001",
+          "confidence": 1.0,
+          "fingerprint": "505ef3ad1535"
+        }
+      ]
+    },
+    {
+      "case": "12_two_issues_one_hunk",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 2
+        },
+        "hunk": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 5,
+        "fp_in_universe": 1,
+        "truth_lines": 2
+      },
+      "stats": {
+        "raw": 2,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/admin.py",
+          "line": 3,
+          "kind": "detectable"
+        },
+        {
+          "file": "src/admin.py",
+          "line": 4,
+          "kind": "detectable"
+        }
+      ],
+      "false_positives": [
+        {
+          "file": "src/admin.py",
+          "line": 1
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/admin.py",
+          "line": 1,
+          "severity": "high",
+          "category": "security",
+          "message": "Use of eval/exec on dynamic input is dangerous.",
+          "evidence": "eval(cmd)",
+          "source": "static",
+          "rule_id": "SEC002",
+          "confidence": 1.0,
+          "fingerprint": "cf4d9ae252eb"
+        },
+        {
+          "file": "src/admin.py",
+          "line": 1,
+          "severity": "low",
+          "category": "style",
+          "message": "Unresolved TODO/FIXME in changed code.",
+          "evidence": "# TODO: add auth check",
+          "source": "static",
+          "rule_id": "STY001",
+          "confidence": 1.0,
+          "fingerprint": "8cf076d466e7"
+        }
+      ]
+    },
+    {
+      "case": "13_comment_mentions_eval",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0
+        },
+        "universe_lines": 3,
+        "fp_in_universe": 1,
+        "truth_lines": 0
+      },
+      "stats": {
+        "raw": 1,
+        "invalid_schema": 0,
+        "off_diff": 0,
+        "evidence_mismatch": 0,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/policy.py",
+          "line": 1
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/policy.py",
+          "line": 1,
+          "severity": "high",
+          "category": "security",
+          "message": "Use of eval/exec on dynamic input is dangerous.",
+          "evidence": "# never call eval( on user input",
+          "source": "static",
+          "rule_id": "SEC002",
+          "confidence": 1.0,
+          "fingerprint": "c5e5a917e1d1"
+        }
+      ]
+    }
+  ]
+}

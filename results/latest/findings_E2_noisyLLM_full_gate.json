@@ -1,0 +1,860 @@
+{
+  "variant": "E2_noisyLLM_full_gate",
+  "cases": [
+    {
+      "case": "01_hardcoded_secret",
+      "score": {
+        "line": {
+          "tp": 1,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 4,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 5,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/config.py",
+          "line": 4
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/config.py",
+          "line": 6,
+          "severity": "critical",
+          "category": "security",
+          "message": "Hard-coded credential. Load it from an environment variable or secret store.",
+          "evidence": "DB_PASSWORD = \"hunter2-prod\"",
+          "source": "static",
+          "rule_id": "SEC001",
+          "confidence": 1.0,
+          "fingerprint": "b4b8a4049ea7"
+        },
+        {
+          "file": "src/config.py",
+          "line": 4,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "HOST = os.environ.get('HOST', 'localhost')",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "908437006c07"
+        }
+      ]
+    },
+    {
+      "case": "02_eval_in_handler",
+      "score": {
+        "line": {
+          "tp": 1,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 7,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 5,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/api.py",
+          "line": 4
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/api.py",
+          "line": 7,
+          "severity": "high",
+          "category": "security",
+          "message": "Use of eval/exec on dynamic input is dangerous.",
+          "evidence": "result = eval(request.args['expr'])",
+          "source": "static",
+          "rule_id": "SEC002",
+          "confidence": 1.0,
+          "fingerprint": "606aceca634b"
+        },
+        {
+          "file": "src/api.py",
+          "line": 4,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "return 'ok'",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "593c538e3a22"
+        }
+      ]
+    },
+    {
+      "case": "03_todo_left",
+      "score": {
+        "line": {
+          "tp": 1,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 3,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 5,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/validate.py",
+          "line": 3
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/validate.py",
+          "line": 2,
+          "severity": "low",
+          "category": "style",
+          "message": "Unresolved TODO/FIXME in changed code.",
+          "evidence": "# FIXME: validate input length",
+          "source": "static",
+          "rule_id": "STY001",
+          "confidence": 1.0,
+          "fingerprint": "f0f259c992af"
+        },
+        {
+          "file": "src/validate.py",
+          "line": 3,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "return x is not None",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "8207f130f15d"
+        }
+      ]
+    },
+    {
+      "case": "04_shell_true",
+      "score": {
+        "line": {
+          "tp": 1,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 6,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 5,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/backup.py",
+          "line": 4
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/backup.py",
+          "line": 7,
+          "severity": "high",
+          "category": "security",
+          "message": "subprocess with shell=True enables command injection.",
+          "evidence": "subprocess.run('tar czf b.tgz ' + path, shell=True)",
+          "source": "llm",
+          "rule_id": "MOCK-LLM",
+          "confidence": 0.5,
+          "fingerprint": "e00f28e92377"
+        },
+        {
+          "file": "src/backup.py",
+          "line": 4,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "pass",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "ea46839fa03c"
+        }
+      ]
+    },
+    {
+      "case": "05_sql_fstring",
+      "score": {
+        "line": {
+          "tp": 1,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 6,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 5,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/db.py",
+          "line": 2
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/db.py",
+          "line": 5,
+          "severity": "high",
+          "category": "security",
+          "message": "SQL built via string formatting; use parameterised queries.",
+          "evidence": "cur.execute(f\"SELECT * FROM users WHERE id = {uid}\")",
+          "source": "llm",
+          "rule_id": "MOCK-LLM",
+          "confidence": 0.5,
+          "fingerprint": "17bb8cdeef8b"
+        },
+        {
+          "file": "src/db.py",
+          "line": 2,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "return None",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "dce86feb553a"
+        }
+      ]
+    },
+    {
+      "case": "06_bare_except",
+      "score": {
+        "line": {
+          "tp": 1,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 7,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 5,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/loader.py",
+          "line": 3
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/loader.py",
+          "line": 6,
+          "severity": "medium",
+          "category": "logic",
+          "message": "Bare/broad except hides errors; catch specific exceptions.",
+          "evidence": "except:",
+          "source": "llm",
+          "rule_id": "MOCK-LLM",
+          "confidence": 0.5,
+          "fingerprint": "eee9fc427c9f"
+        },
+        {
+          "file": "src/loader.py",
+          "line": 3,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "def load(p):",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "05ff4f64a5db"
+        }
+      ]
+    },
+    {
+      "case": "07_off_by_one_logic",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 1,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 5,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 4,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/proc.py",
+          "line": 3,
+          "kind": "semantic"
+        }
+      ],
+      "false_positives": [
+        {
+          "file": "src/proc.py",
+          "line": 1
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/proc.py",
+          "line": 1,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "def run(items):",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "d1260a2144ea"
+        }
+      ]
+    },
+    {
+      "case": "08_clean_refactor",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0
+        },
+        "universe_lines": 8,
+        "fp_in_universe": 1,
+        "truth_lines": 0
+      },
+      "stats": {
+        "raw": 4,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/util.py",
+          "line": 4
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/util.py",
+          "line": 4,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "def get_token():",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "cddb1f80f9dd"
+        }
+      ]
+    },
+    {
+      "case": "09_preexisting_secret_in_context",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 1,
+          "fn": 0
+        },
+        "universe_lines": 4,
+        "fp_in_universe": 1,
+        "truth_lines": 0
+      },
+      "stats": {
+        "raw": 4,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 1,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/settings.py",
+          "line": 4
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/settings.py",
+          "line": 4,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "C = 3",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "71e97da997ec"
+        }
+      ]
+    },
+    {
+      "case": "10_multi_file_mixed",
+      "score": {
+        "line": {
+          "tp": 2,
+          "fp": 3,
+          "fn": 1
+        },
+        "hunk": {
+          "tp": 5,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 10,
+        "fp_in_universe": 3,
+        "truth_lines": 3
+      },
+      "stats": {
+        "raw": 14,
+        "invalid_schema": 3,
+        "off_diff": 3,
+        "evidence_mismatch": 3,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 5,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [
+        {
+          "file": "src/stats.py",
+          "line": 2,
+          "kind": "semantic"
+        }
+      ],
+      "false_positives": [
+        {
+          "file": "src/export.py",
+          "line": 3
+        },
+        {
+          "file": "src/reader.py",
+          "line": 1
+        },
+        {
+          "file": "src/stats.py",
+          "line": 1
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/export.py",
+          "line": 2,
+          "severity": "critical",
+          "category": "security",
+          "message": "Hard-coded credential. Load it from an environment variable or secret store.",
+          "evidence": "api_key = \"sk-test-abcdef123\"",
+          "source": "static",
+          "rule_id": "SEC001",
+          "confidence": 1.0,
+          "fingerprint": "5eec4d094369"
+        },
+        {
+          "file": "src/reader.py",
+          "line": 4,
+          "severity": "medium",
+          "category": "logic",
+          "message": "Bare/broad except hides errors; catch specific exceptions.",
+          "evidence": "except:",
+          "source": "llm",
+          "rule_id": "MOCK-LLM",
+          "confidence": 0.5,
+          "fingerprint": "f4a83d72243f"
+        },
+        {
+          "file": "src/export.py",
+          "line": 3,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "return 1",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "4202897dd0d5"
+        },
+        {
+          "file": "src/reader.py",
+          "line": 1,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "def read(f):",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "c06c4471a0eb"
+        },
+        {
+          "file": "src/stats.py",
+          "line": 1,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "def mean(xs):",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "bbc167d05784"
+        }
+      ]
+    },
+    {
+      "case": "11_hardcoded_token_js",
+      "score": {
+        "line": {
+          "tp": 1,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 2,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 2,
+        "fp_in_universe": 1,
+        "truth_lines": 1
+      },
+      "stats": {
+        "raw": 5,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "web/gh.js",
+          "line": 1
+        }
+      ],
+      "findings": [
+        {
+          "file": "web/gh.js",
+          "line": 2,
+          "severity": "critical",
+          "category": "security",
+          "message": "Hard-coded credential. Load it from an environment variable or secret store.",
+          "evidence": "const token = \"ghp_abcdefghijklmnop\";",
+          "source": "static",
+          "rule_id": "SEC001",
+          "confidence": 1.0,
+          "fingerprint": "9bab693e46eb"
+        },
+        {
+          "file": "web/gh.js",
+          "line": 1,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "export const base = 'https://api.github.com';",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "ac0332ef0fbd"
+        }
+      ]
+    },
+    {
+      "case": "12_two_issues_one_hunk",
+      "score": {
+        "line": {
+          "tp": 2,
+          "fp": 1,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 3,
+          "fp": 0,
+          "fn": 0
+        },
+        "universe_lines": 5,
+        "fp_in_universe": 1,
+        "truth_lines": 2
+      },
+      "stats": {
+        "raw": 6,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 3,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/admin.py",
+          "line": 5
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/admin.py",
+          "line": 3,
+          "severity": "high",
+          "category": "security",
+          "message": "Use of eval/exec on dynamic input is dangerous.",
+          "evidence": "eval(cmd)",
+          "source": "static",
+          "rule_id": "SEC002",
+          "confidence": 1.0,
+          "fingerprint": "9cc35c18bc68"
+        },
+        {
+          "file": "src/admin.py",
+          "line": 4,
+          "severity": "low",
+          "category": "style",
+          "message": "Unresolved TODO/FIXME in changed code.",
+          "evidence": "# TODO: add auth check",
+          "source": "static",
+          "rule_id": "STY001",
+          "confidence": 1.0,
+          "fingerprint": "39702816c417"
+        },
+        {
+          "file": "src/admin.py",
+          "line": 5,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "pass",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "46da888b8129"
+        }
+      ]
+    },
+    {
+      "case": "13_comment_mentions_eval",
+      "score": {
+        "line": {
+          "tp": 0,
+          "fp": 2,
+          "fn": 0
+        },
+        "hunk": {
+          "tp": 0,
+          "fp": 2,
+          "fn": 0
+        },
+        "universe_lines": 3,
+        "fp_in_universe": 2,
+        "truth_lines": 0
+      },
+      "stats": {
+        "raw": 5,
+        "invalid_schema": 1,
+        "off_diff": 1,
+        "evidence_mismatch": 1,
+        "duplicates": 0,
+        "analyzer_errors": 0,
+        "unreviewable_files": 0,
+        "published_candidates": 2,
+        "truncated": 0
+      },
+      "would_422": 0,
+      "missed": [],
+      "false_positives": [
+        {
+          "file": "src/policy.py",
+          "line": 2
+        },
+        {
+          "file": "src/policy.py",
+          "line": 3
+        }
+      ],
+      "findings": [
+        {
+          "file": "src/policy.py",
+          "line": 2,
+          "severity": "high",
+          "category": "security",
+          "message": "Use of eval/exec on dynamic input is dangerous.",
+          "evidence": "# never call eval( on user input",
+          "source": "static",
+          "rule_id": "SEC002",
+          "confidence": 1.0,
+          "fingerprint": "1b6486f398b9"
+        },
+        {
+          "file": "src/policy.py",
+          "line": 3,
+          "severity": "low",
+          "category": "logic",
+          "message": "Plausible but wrong claim",
+          "evidence": "return 'strict'",
+          "source": "llm",
+          "rule_id": "NOISE-4",
+          "confidence": 0.3,
+          "fingerprint": "fa3763917df6"
+        }
+      ]
+    }
+  ]
+}

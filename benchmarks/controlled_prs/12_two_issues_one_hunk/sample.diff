@@ -1,0 +1,9 @@
+diff --git a/src/admin.py b/src/admin.py
+--- a/src/admin.py
++++ b/src/admin.py
+@@ -1,2 +1,5 @@
+ def run():
++    cmd = input()
++    eval(cmd)
++    # TODO: add auth check
+     pass

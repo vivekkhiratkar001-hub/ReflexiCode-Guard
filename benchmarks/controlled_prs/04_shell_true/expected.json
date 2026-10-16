@@ -1,0 +1,11 @@
+{
+  "case": "04_shell_true",
+  "defects": [
+    {
+      "file": "src/backup.py",
+      "line": 7,
+      "rule": "CMD-INJ",
+      "kind": "detectable"
+    }
+  ]
+}
