@@ -1,0 +1,98 @@
+"""Deterministic, changed-line-focused Python static and security analysis."""
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from src.shared.enums import FindingCategory, Severity
+from src.shared.models import AnalysisFinding, PRContext
+from src.analysis.diff_parser import DiffHunk, DiffLine, FileDiff, parse_unified_diff
+from src.analysis.ast_parser import parse_source_or_fragment
+from src.analysis.rules.base import RuleFinding
+from src.analysis.rules.static_rules import run_static_ast_rules
+from src.analysis.rules.security_rules import run_security_ast_rules
+from src.analysis.rules.complexity_rules import (
+    ComplexityConfig,
+    run_complexity_ast_rules,
+)
+from src.analysis.rules.lexical_rules import run_lexical_rules
+from src.analysis.normalizer import deduplicate_and_sort_findings
+
+
+def _is_python(path: str) -> bool:
+    """Determine if a file path points to a Python file."""
+    return path.lower().endswith(".py")
+
+
+def analyze_diff(
+    diff: str,
+    changed_files: Optional[Sequence[str]] = None,
+    complexity_config: Optional[ComplexityConfig] = None,
+) -> List[AnalysisFinding]:
+    """Analyze changed lines in a unified diff and return normalized findings."""
+    if not diff or not diff.strip():
+        return []
+
+    file_diffs = parse_unified_diff(diff)
+    all_findings: List[AnalysisFinding] = []
+
+    for file_diff in file_diffs:
+        target_path = file_diff.target_path
+        if not _is_python(target_path):
+            continue
+        if file_diff.is_binary or file_diff.change_type == "deleted":
+            continue
+
+        file_raw_findings: List[RuleFinding] = []
+
+        for hunk in file_diff.hunks:
+            if not hunk.lines:
+                continue
+
+            # Extract line texts for AST fragment parsing
+            lines_text = [l.text for l in hunk.lines]
+            tree, line_offset, _ = parse_source_or_fragment(lines_text)
+
+            hunk_rules: List[RuleFinding] = []
+            if tree is not None:
+                hunk_rules.extend(run_static_ast_rules(tree, hunk.lines, line_offset))
+                hunk_rules.extend(run_security_ast_rules(tree, hunk.lines, line_offset))
+                hunk_rules.extend(
+                    run_complexity_ast_rules(tree, hunk.lines, line_offset, complexity_config)
+                )
+
+            # If AST rules produced no findings (e.g. fragment or malformed code), use lexical fallback
+            if not hunk_rules:
+                hunk_rules.extend(run_lexical_rules(hunk.lines))
+            else:
+                # Also ensure pattern-based secret checks ran for added lines in the hunk
+                secret_findings = [
+                    f for f in run_security_ast_rules(tree, hunk.lines, line_offset)
+                    if f.rule_id == "SEC005"
+                ]
+                for sf in secret_findings:
+                    if sf not in hunk_rules:
+                        hunk_rules.append(sf)
+
+            file_raw_findings.extend(hunk_rules)
+
+        # Normalize, deduplicate, and sort findings for this file
+        normalized = deduplicate_and_sort_findings(target_path, file_raw_findings)
+        all_findings.extend(normalized)
+
+    # Deterministic final sort across all files
+    return sorted(
+        all_findings,
+        key=lambda item: (
+            item.file_path,
+            item.line_number if item.line_number is not None else -1,
+            item.category,
+            item.message,
+        ),
+    )
+
+
+def analyze_pr(context: PRContext) -> List[AnalysisFinding]:
+    """Analyze added Python lines in a PR diff and return shared findings."""
+    if not context.diff:
+        return []
+    return analyze_diff(context.diff, changed_files=context.changed_files)
