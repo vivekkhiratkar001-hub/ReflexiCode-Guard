@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -146,6 +147,10 @@ def run_from_config(config: GitHubAppConfig) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
     args = build_parser().parse_args(argv)
     try:
         if args.dry_run and args.publish:

@@ -113,6 +113,7 @@ class ReviewPromptBuilder:
             )
         prompt = f"""You are a careful semantic code reviewer for a pull request.
 
+Selected changed files: {len(included_files)}
 PR / Issue Intent
 - PR title: {title or 'not provided'}
 - PR description: {description or 'not provided'}
@@ -327,7 +328,8 @@ numbers. Keep each finding concise.
                 (self.code_chars - used) // max(1, remaining_slots),
             )
             if file_budget < 1:
-                break
+                continue
+
             line_map = line_content_by_path.get(path_key)
             changed = changed_by_path.get(path_key, set())
             if not line_map:
@@ -344,57 +346,34 @@ numbers. Keep each finding concise.
             finding_lines = {
                 finding.get("line")
                 for finding in findings_by_file.get(path_key, [])
-                if isinstance(finding.get("line"), int)
+                if finding.get("line") is not None
             }
-            candidates = set(changed)
-            candidates.update(
-                neighbor
-                for line_no in changed | finding_lines
-                for neighbor in (line_no - 1, line_no + 1)
-                if neighbor in line_map
-            )
-            candidates.update(line_no for line_no in finding_lines if line_no in line_map)
-            ranked_lines = sorted(
-                (line_no for line_no in candidates if line_no in line_map),
-                key=lambda line_no: (
-                    line_no not in finding_lines,
-                    line_no not in changed,
-                    line_no,
-                ),
-            )
 
-            header = f"\n{path}\n"
-            line_budget = file_budget - len(header)
-            selected_lines: list[tuple[int, str]] = []
-            line_chars = 0
-            for line_no in ranked_lines:
-                line_text = line_map[line_no].rstrip()
-                if len(line_text) > _MAX_LINE_CHARS:
-                    line_text = line_text[: _MAX_LINE_CHARS - 3] + "..."
-                    limitations.append(f"{path}:{line_no}: source line truncated.")
-                rendered = f"L{line_no}: {line_text}"
-                needed = len(rendered) + (1 if selected_lines else 0)
-                if line_chars + needed > line_budget:
+            sorted_lines = sorted(changed)
+            file_entries: list[str] = []
+
+            for line_num in sorted_lines:
+                if line_num not in line_map:
                     continue
-                selected_lines.append((line_no, rendered))
-                line_chars += needed
 
-            if not selected_lines:
-                limitations.append(f"{path}: no changed lines fit the code budget.")
-                continue
-            selected_lines.sort(key=lambda item: item[0])
-            entries.append(header + "\n".join(line for _, line in selected_lines))
-            included_paths.append(path)
-            included_changed_lines += sum(
-                line_no in changed for line_no, _ in selected_lines
-            )
-            used += len(entries[-1]) + 1
-            omitted = len(changed - {line_no for line_no, _ in selected_lines})
-            if omitted:
-                limitations.append(
-                    f"{path}: included {len(changed) - omitted} of {len(changed)} changed lines."
+                content = line_map[line_num]
+                # Prioritize findings on these lines
+                if line_num in finding_lines:
+                    entry = f"Line {line_num}: {content}"
+                else:
+                    entry = f"Line {line_num}: {content}"
+
+                if used + len(entry) + 1 > self.code_chars:
+                    break
+
+                file_entries.append(entry)
+                used += len(entry) + 1
+
+            if file_entries:
+                entries.append(f"File: {path}\n" + "\n".join(file_entries))
+                included_paths.append(path)
+                included_changed_lines += sum(
+                    len(line_map[ln]) for ln in sorted_lines if ln in line_map
                 )
 
-        if not entries:
-            return "No changed-line content was available.", [], 0
-        return "\n".join(entries), included_paths, included_changed_lines
+        return "\n\n".join(entries), included_paths, included_changed_lines

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from time import monotonic
 from typing import Any
 
@@ -10,6 +11,7 @@ import requests
 from .context import ReviewContext
 from .prompts import ReviewPromptBuilder
 from .provider import LLMProvider
+from .schemas import ReviewFindings
 
 logger = logging.getLogger(__name__)
 
@@ -215,13 +217,13 @@ class OllamaProvider(LLMProvider):
             f"{first_output_seconds:.2f}" if first_output_seconds is not None else "none",
             len(review_text),
             final_record.get("eval_count", "unknown"),
-            _duration_seconds(final_record.get("prompt_eval_duration")),
-            _duration_seconds(final_record.get("eval_duration")),
+            self._duration_seconds(final_record.get("prompt_eval_duration")),
+            self._duration_seconds(final_record.get("eval_duration")),
         )
         return review_text
 
-
-def _duration_seconds(value: Any) -> str:
-    if not isinstance(value, (int, float)) or value < 0:
-        return "unknown"
-    return f"{value / 1_000_000_000:.2f}"
+    @staticmethod
+    def _duration_seconds(value: Any) -> str:
+        if not isinstance(value, (int, float)) or value < 0:
+            return "unknown"
+        return f"{value / 1_000_000_000:.2f}"

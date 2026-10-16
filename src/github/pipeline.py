@@ -40,6 +40,10 @@ def review_pr(
     if reviewer is not None:
         try:
             findings = reviewer.review(context, findings, rules)
+            reviewer_failures = tuple(getattr(reviewer, "review_failures", ()))
+            if reviewer_failures:
+                status = ReviewStatus.PARTIAL
+                reviewer_error = " ".join(reviewer_failures)
         except RuntimeError as error:
             status = ReviewStatus.PARTIAL
             reviewer_error = str(error)

@@ -127,6 +127,9 @@ class SharedContractReviewer:
         self.changed_line_content = changed_line_content
         self.context_builder = context_builder or ReviewContextBuilder()
         self.context_limitations: tuple[str, ...] = ()
+        self.review_failures: tuple[str, ...] = ()
+        self.reviewed_files: tuple[str, ...] = ()
+        self.unreviewed_files: tuple[str, ...] = ()
 
     def review(
         self,
@@ -170,6 +173,9 @@ class SharedContractReviewer:
             raise RuntimeError(f"Member 3 rejected the model response: {error}") from error
         finally:
             self.context_limitations = self.pipeline.last_context_limitations
+            self.review_failures = self.pipeline.last_review_failures
+            self.reviewed_files = self.pipeline.last_reviewed_files
+            self.unreviewed_files = self.pipeline.last_unreviewed_files
 
         static_evidence = {
             (

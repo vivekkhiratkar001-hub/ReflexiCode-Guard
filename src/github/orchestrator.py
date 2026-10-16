@@ -119,6 +119,14 @@ class ReviewOrchestrator:
                 "Semantic review context was prioritized and bounded: "
                 + " ".join(reviewer.context_limitations)
             )
+        summary.reviewed_files = list(reviewer.reviewed_files)
+        summary.unreviewed_files = list(reviewer.unreviewed_files)
+        summary.semantic_batches_total = self.pipeline.last_batch_count
+        summary.semantic_batches_failed = self.pipeline.last_failed_batch_count
+        if self.pipeline.last_batch_count > 1:
+            summary.warnings.append(
+                f"Semantic review was split into {self.pipeline.last_batch_count} bounded batches."
+            )
         if review_result.status is ReviewStatus.PARTIAL:
             summary.errors.append(review_result.summary)
         findings = self._to_publishable_findings(review_result.findings, summary)

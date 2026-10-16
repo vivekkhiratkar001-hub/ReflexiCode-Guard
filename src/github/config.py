@@ -45,13 +45,13 @@ class GitHubAppConfig:
     rules_file: Path | None
     analysis_file: Path | None
     ollama_timeout: int = DEFAULT_OLLAMA_TIMEOUT
-    head_sha: str | None = None
     ollama_num_predict: int = DEFAULT_OLLAMA_NUM_PREDICT
     ollama_num_ctx: int = DEFAULT_OLLAMA_NUM_CTX
     review_prompt_chars: int = DEFAULT_REVIEW_PROMPT_CHARS
     review_code_chars: int = DEFAULT_REVIEW_CODE_CHARS
     review_analysis_chars: int = DEFAULT_REVIEW_ANALYSIS_CHARS
     review_max_files: int = DEFAULT_REVIEW_MAX_FILES
+    head_sha: str | None = None
 
     def require_token(self, *, for_write: bool) -> str:
         if self.token:
@@ -109,9 +109,9 @@ def load_github_event(event_path: Path) -> dict:
     try:
         payload = json.loads(event_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise GitHubConfigError(f"GitHub event file not found: {event_path}") from exc
+        raise GitHubConfigError(f"GitHub event file not found: {event_path}")
     except json.JSONDecodeError as exc:
-        raise GitHubConfigError(f"GitHub event file is not valid JSON: {event_path}") from exc
+        raise GitHubConfigError(f"GitHub event file is not valid JSON: {event_path}")
     if not isinstance(payload, dict):
         raise GitHubConfigError("GitHub event payload must be a JSON object.")
     return payload
@@ -132,7 +132,7 @@ def config_from_event(payload: dict) -> tuple[str, str, int, str | None]:
     try:
         pr_number = int(number)
     except (TypeError, ValueError) as exc:
-        raise GitHubConfigError(f"Invalid pull request number in event payload: {number!r}.") from exc
+        raise GitHubConfigError(f"Invalid pull request number in event payload: {number!r}.")
     owner, repo = _split_repository(str(full_name))
     return owner, repo, pr_number, str(sha) if sha else None
 
@@ -182,8 +182,7 @@ def build_config(
         except ValueError as exc:
             raise GitHubConfigError(
                 f"GITHUB_PR_NUMBER must be an integer, got {os.environ['GITHUB_PR_NUMBER']!r}."
-            ) from exc
-
+                )
     if not resolved_owner or not resolved_repo or resolved_pr is None:
         raise GitHubConfigError(
             "Missing pull-request identity. Provide --owner, --repo, and --pr-number "
@@ -276,9 +275,6 @@ def build_config(
             "increase num_ctx or reduce the prompt/output limits."
         )
 
-    # A non-publishing run is always a dry run. An environment variable must
-    # never silently enable GitHub writes; publication requires the explicit
-    # `publish=True` gate (wired to the CLI's --publish option).
     resolved_dry_run = not publish or dry_run is True
 
     resolved_mock = (
@@ -306,15 +302,14 @@ def build_config(
         ),
         analysis_file=Path(analysis_file) if analysis_file else (
             Path(os.environ["REFLEXICODE_ANALYSIS_FILE"])
-            if os.environ.get("REFLEXICODE_ANALYSIS_FILE")
-            else None
+            if os.environ.get("REFLEXICODE_ANALYSIS_FILE") else None
         ),
         ollama_timeout=timeout_value,
-        head_sha=event_sha,
         ollama_num_predict=num_predict,
         ollama_num_ctx=num_ctx,
         review_prompt_chars=prompt_chars,
         review_code_chars=code_chars,
         review_analysis_chars=analysis_chars,
         review_max_files=max_files,
+        head_sha=event_sha,
     )

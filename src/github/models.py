@@ -137,6 +137,10 @@ class ReviewSummary:
     comments_skipped_duplicate: int = 0
     unmapped_findings: list[str] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
+    reviewed_files: list[str] = field(default_factory=list)
+    unreviewed_files: list[str] = field(default_factory=list)
+    semantic_batches_total: int = 0
+    semantic_batches_failed: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     intended_comments: list[InlineComment] = field(default_factory=list)
@@ -158,6 +162,8 @@ class ReviewSummary:
         )
         unmapped = "\n".join(f"- {item}" for item in self.unmapped_findings) or "- none"
         skipped = "\n".join(f"- {item}" for item in self.skipped_files) or "- none"
+        reviewed = "\n".join(f"- {item}" for item in self.reviewed_files) or "- none"
+        unreviewed = "\n".join(f"- {item}" for item in self.unreviewed_files) or "- none"
         errors = "\n".join(f"- {item}" for item in self.errors) or "- none"
         warnings = "\n".join(f"- {item}" for item in self.warnings) or "- none"
         return f"""## ReflexiCode-Guard review summary
@@ -178,6 +184,16 @@ class ReviewSummary:
 
 ### Files skipped (binary / missing patch / unsupported)
 {skipped}
+
+### Semantic review coverage
+- Batches: {self.semantic_batches_total}
+- Failed batches: {self.semantic_batches_failed}
+
+#### Reviewed files
+{reviewed}
+
+#### Not reviewed files
+{unreviewed}
 
 ### Warnings
 {warnings}

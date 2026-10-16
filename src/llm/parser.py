@@ -46,6 +46,11 @@ def _extract_json_object(raw_response: str) -> str:
         candidates.append((score, start, payload))
 
     if not candidates:
+        if text.count("{") > text.count("}"):
+            raise ReviewResponseError(
+                "The model response does not contain valid JSON: it contains "
+                "truncated JSON whose object was not closed."
+            )
         raise ReviewResponseError("The model response does not contain a valid JSON object.")
 
     _, _, best_payload = max(candidates, key=lambda item: (item[0], item[1]))
@@ -194,7 +199,7 @@ def deduplicate_findings(findings: Sequence[ReviewFinding]) -> list[ReviewFindin
         duplicate = False
         for existing in unique:
             if (
-                finding.file != existing.file
+                _normalize_path(finding.file) != _normalize_path(existing.file)
                 or finding.line != existing.line
                 or finding.category.casefold() != existing.category.casefold()
             ):

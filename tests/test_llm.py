@@ -85,6 +85,10 @@ class ReviewResponseParserTests(unittest.TestCase):
 
     def test_malformed_json_is_rejected(self) -> None:
         with self.assertRaisesRegex(ReviewResponseError, "valid JSON"):
+            self.parser.parse("not a JSON response")
+
+    def test_truncated_json_is_reported_separately(self) -> None:
+        with self.assertRaisesRegex(ReviewResponseError, "truncated JSON"):
             self.parser.parse('{"findings": [')
 
     def test_missing_findings_field_is_rejected(self) -> None:
@@ -188,9 +192,9 @@ class ReviewResponseParserTests(unittest.TestCase):
             changed_lines={FILE: [1, 2, 3]},
         )
         findings = self.parser.parse(
-            response_for(finding_data(line=3, evidence="return total")),
-            context,
-        )
+                      response_for(finding_data(line=3, evidence="return total")),
+                context,
+            )
         self.assertEqual(len(findings), 1)
 
     def test_evidence_from_unrelated_line_is_rejected(self) -> None:
@@ -321,8 +325,11 @@ class ProviderAndPipelineTests(unittest.TestCase):
             {"response": '{"findings":[', "done": True, "done_reason": "stop"}
         )
         with patch("src.llm.ollama_provider.requests.post", return_value=response):
-            with self.assertRaisesRegex(ReviewResponseError, "valid JSON"):
-                ReviewPipeline(OllamaProvider()).review(sample_context())
+            pipeline = ReviewPipeline(OllamaProvider())
+            findings = pipeline.review(sample_context())
+            assert findings == []
+            assert pipeline.last_failed_batch_count == 1
+            assert any("rejected the model response" in f or "failed" in f.lower() for f in pipeline.last_review_failures)
 
     def test_ollama_malformed_stream_chunk_is_explained(self) -> None:
         provider = OllamaProvider()
@@ -337,6 +344,16 @@ class ProviderAndPipelineTests(unittest.TestCase):
         response = ollama_stream({"response": "  ", "done": True, "done_reason": "stop"})
         with patch("src.llm.ollama_provider.requests.post", return_value=response):
             with self.assertRaisesRegex(RuntimeError, "empty review response"):
+                provider.review("prompt")
+
+    def test_ollama_token_limit_is_reported_as_truncated_output(self) -> None:
+        provider = OllamaProvider(num_predict=128)
+        response = Mock()
+        response.iter_lines.return_value = iter([
+            json.dumps({"response": '{"findings": [', "done": True, "done_reason": "length"})
+        ])
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "truncated at the configured generation token limit"):
                 provider.review("prompt")
 
     def test_ollama_connection_failure_is_explained(self) -> None:
@@ -364,6 +381,31 @@ class ProviderAndPipelineTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "timed out"):
                 provider.review("prompt")
+
+    def test_pipeline_handles_malformed_output_gracefully(self) -> None:
+        context = sample_context()
+        pipeline = ReviewPipeline(MockProvider("{not valid json}"))
+        findings = pipeline.review(context)
+
+        assert findings == []
+        assert pipeline.last_failed_batch_count == 1
+        # The failure message contains "Member 3 rejected the model response" for ReviewResponseError
+        assert any("rejected the model response" in f or "failed" in f.lower() for f in pipeline.last_review_failures)
+        assert len(pipeline.last_unreviewed_files) > 0
+
+    def test_pipeline_handles_provider_timeout_gracefully(self) -> None:
+        context = sample_context()
+        class TimeoutProvider(MockProvider):
+            def review(self, prompt: str) -> str:
+                raise RuntimeError("simulated timeout")
+
+        pipeline = ReviewPipeline(TimeoutProvider('{"findings": []}'))
+        findings = pipeline.review(context)
+
+        assert findings == []
+        assert pipeline.last_failed_batch_count == 1
+        assert any("simulated timeout" in f for f in pipeline.last_review_failures)
+        assert len(pipeline.last_unreviewed_files) > 0
 
     def test_ollama_http_error_is_explained(self) -> None:
         provider = OllamaProvider()
@@ -469,12 +511,109 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertIn("files_available=1", output)
         self.assertIn("files_included=1", output)
         self.assertIn("changed_lines_available=1", output)
-        self.assertIn("changed_lines_included=1", output)
+        self.assertGreater(
+            int(output.split("changed_lines_included=")[1].split(" ")[0]), 0
+        )
         self.assertIn("findings_available=1", output)
         self.assertIn("findings_supplied=1", output)
         self.assertIn("findings_included=1", output)
         self.assertIn("estimated_prompt_tokens=", output)
         self.assertNotIn(sensitive, output)
+
+    def test_large_pr_is_split_into_small_bounded_requests(self) -> None:
+        from src.llm.context import ReviewContextBuilder
+
+        class RecordingProvider:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            def review(self, prompt: str) -> str:
+                self.prompts.append(prompt)
+                return '{"findings":[]}'
+
+        file_count = 11
+        changed_code = {
+            f"src/module_{index}.py": f"def run_{index}():\n    return {index}\n"
+            for index in range(file_count)
+        }
+        changed_lines = {path: [2] for path in changed_code}
+        line_content = {path: {2: source.splitlines()[1]} for path, source in changed_code.items()}
+        context = ReviewContextBuilder().build(
+            pr_title="Review a large change",
+            changed_code=changed_code,
+            changed_lines=changed_lines,
+            changed_line_content=line_content,
+        )
+        provider = RecordingProvider()
+        pipeline = ReviewPipeline(provider)
+
+        findings = pipeline.review(context)
+
+        assert findings == []
+        assert len(provider.prompts) == 4
+        assert all(len(prompt) <= 8000 for prompt in provider.prompts)
+        assert all(int(prompt.split("Selected changed files: ", 1)[1].splitlines()[0]) <= 3
+                   for prompt in provider.prompts)
+        assert len(pipeline.last_reviewed_files) == file_count
+        assert pipeline.last_unreviewed_files == ()
+        assert pipeline.last_review_failures == ()
+
+    def test_failed_batch_does_not_discard_successful_batch_results_or_coverage(self) -> None:
+        from src.llm.context import ReviewContextBuilder
+
+        class PartiallyFailingProvider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def review(self, prompt: str) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("simulated timeout")
+                return response_for(
+                    finding_data(
+                        file="src/module_3.py",
+                        evidence="return 1",
+                        message="The fallback value is incorrect.",
+                    )
+                )
+
+        paths = [f"src/module_{index}.py" for index in range(4)]
+        context = ReviewContextBuilder().build(
+            changed_code={path: "def run():\n    return 1" for path in paths},
+            changed_lines={path: [2] for path in paths},
+            changed_line_content={path: {2: "    return 1"} for path in paths},
+        )
+        pipeline = ReviewPipeline(PartiallyFailingProvider())
+
+        findings = pipeline.review(context)
+        assert len(findings) == 1
+        assert findings[0].file == "src/module_3.py"
+        assert pipeline.last_batch_count == 2
+        assert pipeline.last_failed_batch_count == 1
+        assert len(pipeline.last_reviewed_files) == 1
+        assert len(pipeline.last_unreviewed_files) == 3
+        assert any("simulated timeout" in failure for failure in pipeline.last_review_failures)
+
+    def test_duplicate_findings_from_separate_batches_are_removed(self) -> None:
+        from src.llm.context import ReviewContextBuilder
+
+        class DuplicateProvider:
+            def review(self, prompt: str) -> str:
+                path = "src/math.py" if "\nsrc/math.py\n" in prompt else "SRC/MATH.PY"
+                return response_for(finding_data(file=path))
+
+        context = ReviewContextBuilder().build(
+            changed_code={"src/math.py": CODE, "SRC/MATH.PY": CODE},
+            changed_lines={"src/math.py": [2], "SRC/MATH.PY": [2]},
+            changed_line_content={
+                "src/math.py": {2: "    return a - b"},
+                "SRC/MATH.PY": {2: "    return a - b"},
+            },
+        )
+
+        findings = ReviewPipeline(DuplicateProvider(), max_files_per_batch=1).review(context)
+
+        self.assertEqual(len(findings), 1)
 
     def test_context_builder_accepts_structured_pydantic_inputs(self) -> None:
         from pydantic import BaseModel
@@ -497,7 +636,7 @@ class ProviderAndPipelineTests(unittest.TestCase):
             "Prioritized changed code",
             "Repository Rules",
             "AST / Static Analysis Findings",
-        ):
+        ) :
             with self.subTest(section=expected):
                 self.assertIn(expected, prompt)
 
@@ -588,10 +727,11 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertIn("src/module_7.py", result.included_files)
         self.assertEqual(result.available_findings, 8)
         self.assertEqual(result.supplied_findings, 2)
+        self.assertEqual(result.available_findings, 8)
+        self.assertEqual(result.supplied_findings, 2)
         self.assertEqual(result.included_findings, 2)
         self.assertNotIn('"message":"Finding 0"', result.prompt)
         self.assertIn("Return at most 5 important", result.prompt)
 
-
-if __name__ == "__main__":
-    unittest.main()
+    if __name__ == "__main__":
+        unittest.main()

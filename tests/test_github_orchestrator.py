@@ -95,6 +95,10 @@ def test_orchestrator_runs_member3_pipeline_in_dry_run() -> None:
     assert summary.comments_published == 0
     assert summary.unmapped_findings == []
     assert summary.head_sha == "deadbeef"
+    assert summary.semantic_batches_total == 1
+    assert summary.semantic_batches_failed == 0
+    assert summary.reviewed_files == ["src/math.py"]
+    assert summary.unreviewed_files == []
     assert "**[High] Bug**" in summary.intended_comments[0].body
     assert "DRY RUN" in summary.to_markdown()
     assert "Comments that would be published: 1" in summary.to_markdown()
@@ -157,8 +161,48 @@ def test_orchestrator_preserves_static_findings_and_reports_semantic_timeout() -
     assert summary.findings_by_severity == {"High": 1}
     assert any("Semantic review failed" in error for error in summary.errors)
     assert any("timed out after 180 seconds" in error for error in summary.errors)
+    assert summary.semantic_batches_failed == 1
+    assert summary.unreviewed_files == ["src/risky.py"]
+    assert "Not reviewed files\n- src/risky.py" in summary.to_markdown()
     assert summary.intended_comments[0].path == "src/risky.py"
     assert summary.intended_comments[0].line == 1
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
+
+
+def test_cli_exits_nonzero_for_failed_semantic_review(monkeypatch, capsys) -> None:
+    from src.github import cli as github_cli
+
+    session = _session()
+    monkeypatch.setattr(
+        github_cli,
+        "GitHubClient",
+        lambda *, token, api_url: GitHubClient(
+            token=token,
+            api_url=api_url,
+            session=session,
+            sleeper=lambda _: None,
+        ),
+    )
+
+    class FailingProvider:
+        def review(self, _prompt):
+            raise RuntimeError("simulated Ollama timeout")
+
+    monkeypatch.setattr(
+        github_cli,
+        "build_pipeline",
+        lambda _config: ReviewPipeline(FailingProvider()),
+    )
+
+    exit_code = github_cli.main(
+        ["--owner", "acme", "--repo", "demo", "--pr-number", "7", "--dry-run"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "Semantic review failed" in output
+    assert "Failed batches: 1" in output
+    assert "Not reviewed files\n- src/math.py" in output
     assert all(call.args[0] != "POST" for call in session.request.call_args_list)
 
 
@@ -181,8 +225,13 @@ def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None
     summary = ReviewOrchestrator(client, pipeline, dry_run=True).run("acme", "demo", 7)
 
     assert summary.errors == []
-    assert any("context was prioritized and bounded" in warning for warning in summary.warnings)
-    assert len(pipeline.provider.last_input) < 24000
+    assert any("split into 7 bounded batches" in warning for warning in summary.warnings)
+    assert summary.semantic_batches_total == 7
+    assert summary.semantic_batches_failed == 0
+    assert len(summary.reviewed_files) == 20
+    assert summary.unreviewed_files == []
+    assert len(pipeline.provider.inputs) == 7
+    assert all(isinstance(prompt, str) and len(prompt) <= 8000 for prompt in pipeline.provider.inputs)
 
 
 def test_orchestrator_publishes_shared_static_findings_and_deduplicates_llm() -> None:
@@ -401,6 +450,8 @@ def test_unmapped_findings_go_to_summary() -> None:
     assert summary.total_findings == 0
     assert summary.errors
     assert "Member 3 rejected" in summary.errors[0]
+    assert summary.semantic_batches_failed == 1
+    assert summary.unreviewed_files == ["src/math.py"]
 
 
 def test_summary_counts_unmapped_when_line_not_in_diff() -> None:
