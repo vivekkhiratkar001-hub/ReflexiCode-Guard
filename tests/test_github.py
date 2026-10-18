@@ -381,13 +381,14 @@ def test_config_from_cli_values() -> None:
 
 def test_ollama_timeout_configuration_is_validated(monkeypatch) -> None:
     config = build_config(owner="acme", repo="demo", pr_number=3)
-    assert config.ollama_timeout == 180
-    assert config.ollama_num_predict == 768
-    assert config.ollama_num_ctx == 8192
+    assert config.ollama_timeout == 120
+    assert config.ollama_num_predict == 512
+    assert config.ollama_num_ctx == 4096
     assert config.review_prompt_chars == 10000
     assert config.review_code_chars == 4000
     assert config.review_analysis_chars == 2500
     assert config.review_max_files == 5
+    assert config.review_max_findings == 3
 
     monkeypatch.setenv("REFLEXICODE_OLLAMA_TIMEOUT", "45")
     assert build_config(owner="acme", repo="demo", pr_number=3).ollama_timeout == 45
@@ -396,26 +397,30 @@ def test_ollama_timeout_configuration_is_validated(monkeypatch) -> None:
     with pytest.raises(GitHubConfigError, match="REFLEXICODE_OLLAMA_TIMEOUT"):
         build_config(owner="acme", repo="demo", pr_number=3)
 
-    with pytest.raises(GitHubConfigError, match="between 1 and 900"):
-        build_config(owner="acme", repo="demo", pr_number=901, ollama_timeout=901)
+    with pytest.raises(GitHubConfigError, match="between 1 and 300"):
+        build_config(owner="acme", repo="demo", pr_number=3, ollama_timeout=301)
 
 
 def test_ollama_generation_and_review_budgets_are_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXICODE_OLLAMA_MODEL", "qwen2.5-coder:7b")
     monkeypatch.setenv("REFLEXICODE_OLLAMA_NUM_PREDICT", "512")
     monkeypatch.setenv("REFLEXICODE_OLLAMA_NUM_CTX", "4096")
     monkeypatch.setenv("REFLEXICODE_REVIEW_PROMPT_CHARS", "9000")
     monkeypatch.setenv("REFLEXICODE_REVIEW_CODE_CHARS", "3500")
     monkeypatch.setenv("REFLEXICODE_REVIEW_ANALYSIS_CHARS", "2000")
     monkeypatch.setenv("REFLEXICODE_REVIEW_MAX_FILES", "4")
+    monkeypatch.setenv("REFLEXICODE_REVIEW_MAX_FINDINGS", "2")
 
     config = build_config(owner="acme", repo="demo", pr_number=3)
 
     assert config.ollama_num_predict == 512
+    assert config.ollama_model == "qwen2.5-coder:7b"
     assert config.ollama_num_ctx == 4096
     assert config.review_prompt_chars == 9000
     assert config.review_code_chars == 3500
     assert config.review_analysis_chars == 2000
     assert config.review_max_files == 4
+    assert config.review_max_findings == 2
 
 
 @pytest.mark.parametrize(
@@ -427,6 +432,7 @@ def test_ollama_generation_and_review_budgets_are_configurable(monkeypatch) -> N
         ("review_code_chars", 100, "REFLEXICODE_REVIEW_CODE_CHARS"),
         ("review_analysis_chars", 100, "REFLEXICODE_REVIEW_ANALYSIS_CHARS"),
         ("review_max_files", 0, "REFLEXICODE_REVIEW_MAX_FILES"),
+        ("review_max_findings", 9, "REFLEXICODE_REVIEW_MAX_FINDINGS"),
     ],
 )
 def test_ollama_generation_and_review_settings_validate_bounds(
@@ -445,6 +451,11 @@ def test_ollama_generation_context_must_exceed_output_limit() -> None:
             ollama_num_predict=2048,
             ollama_num_ctx=2048,
         )
+
+
+def test_ollama_model_name_must_not_be_empty() -> None:
+    with pytest.raises(GitHubConfigError, match="model name"):
+        build_config(owner="acme", repo="demo", pr_number=3, ollama_model=" ")
 
 
 def test_review_prompt_and_generation_budgets_must_fit_ollama_context() -> None:

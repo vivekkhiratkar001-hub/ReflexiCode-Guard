@@ -18,43 +18,26 @@ class ReviewResponseError(ValueError):
 
 
 def _extract_json_object(raw_response: str) -> str:
-    """Prefer the structured review payload over earlier stray brace pairs."""
+    """Require one complete JSON object without prose or markdown wrappers."""
     text = raw_response.strip()
-    fenced = re.match(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
-    if fenced:
-        text = fenced.group(1).strip()
-
     decoder = json.JSONDecoder()
-    candidates: list[tuple[int, int, str]] = []
-    for start, character in enumerate(text):
-        if character != "{":
-            continue
-        try:
-            value, end = decoder.raw_decode(text[start:])
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(value, dict):
-            continue
-        payload = text[start : start + end]
-        score = 0
-        lower = payload.casefold()
-        for keyword in ("findings", "file", "line", "category", "severity", "message", "evidence"):
-            if keyword in lower:
-                score += 5
-        if value == {} and score == 0:
-            continue
-        candidates.append((score, start, payload))
-
-    if not candidates:
-        if text.count("{") > text.count("}"):
+    try:
+        _, end = decoder.raw_decode(text)
+    except json.JSONDecodeError as exc:
+        if text.count("{") > text.count("}") or text.count("[") > text.count("]"):
             raise ReviewResponseError(
-                "The model response does not contain valid JSON: it contains "
-                "truncated JSON whose object was not closed."
-            )
-        raise ReviewResponseError("The model response does not contain a valid JSON object.")
-
-    _, _, best_payload = max(candidates, key=lambda item: (item[0], item[1]))
-    return best_payload
+                "The model response contains truncated JSON."
+            ) from exc
+        raise ReviewResponseError(
+            "The model response does not contain valid JSON."
+        ) from exc
+    if text[end:].strip():
+        raise ReviewResponseError(
+            "The model response must contain only one JSON object."
+        )
+    if not text.startswith("{"):
+        raise ReviewResponseError("The model response must be a JSON object.")
+    return text
 
 
 def _normalized(value: str) -> str:
@@ -64,7 +47,10 @@ def _normalized(value: str) -> str:
 
 def _normalize_path(value: str) -> str:
     """Use a simple cross-platform canonical form for file paths."""
-    return value.replace("\\", "/").strip().lstrip("./").casefold()
+    normalized = value.replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
 
 
 def _normalize_message(value: str) -> str:
@@ -111,11 +97,16 @@ def _analysis_matches_finding(
             continue
         if _normalize_path(str(analysis.get("file", ""))) != normalized_file:
             continue
-        payload = json.dumps(analysis, ensure_ascii=False)
-        if normalized_evidence in _normalized(payload):
-            return True
-        message = analysis.get("message")
-        if isinstance(message, str) and _normalized(message) in normalized_evidence:
+        analysis_line = analysis.get("line")
+        if isinstance(analysis_line, int) and not isinstance(analysis_line, bool):
+            if analysis_line != finding.line:
+                continue
+        evidence = analysis.get("evidence")
+        if (
+            isinstance(evidence, str)
+            and _looks_meaningful_evidence(evidence)
+            and normalized_evidence == _normalized(evidence)
+        ):
             return True
     return False
 
@@ -223,6 +214,11 @@ def deduplicate_findings(findings: Sequence[ReviewFinding]) -> list[ReviewFindin
 class ReviewResponseParser:
     """Parse JSON, validate the schema, and check context-backed locations."""
 
+    def __init__(self, max_findings: int = 3) -> None:
+        if isinstance(max_findings, bool) or not isinstance(max_findings, int) or max_findings < 1:
+            raise ValueError("max_findings must be a positive integer.")
+        self.max_findings = max_findings
+
     def parse(
         self,
         raw_response: str,
@@ -237,10 +233,14 @@ class ReviewResponseParser:
             envelope = ReviewFindings.model_validate_json(json_text)
         except ValidationError as exc:
             raise ReviewResponseError(
-                f"The model response failed review-schema validation: {exc}"
+                "The model response failed review-schema validation."
             ) from exc
 
         findings = envelope.findings
+        if len(findings) > self.max_findings:
+            raise ReviewResponseError(
+                "The model response exceeded the configured semantic finding limit."
+            )
         if context is not None:
             self._validate_against_context(findings, context)
         return deduplicate_findings(findings)
@@ -250,7 +250,19 @@ class ReviewResponseParser:
         findings: list[ReviewFinding], context: ReviewContext
     ) -> None:
         """Reject findings for unknown files, unchanged lines, or unsupported code."""
+        supported_categories = {
+            "bug",
+            "correctness",
+            "security",
+            "performance",
+            "maintainability",
+            "architecture",
+        }
         for finding in findings:
+            if finding.category.casefold() not in supported_categories:
+                raise ReviewResponseError(
+                    "The model response contains an unsupported finding category."
+                )
             validate_file(finding, context)
             validate_line(finding, context)
             validate_evidence(finding, context)

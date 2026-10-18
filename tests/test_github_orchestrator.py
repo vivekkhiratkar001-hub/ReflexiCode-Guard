@@ -97,11 +97,29 @@ def test_orchestrator_runs_member3_pipeline_in_dry_run() -> None:
     assert summary.head_sha == "deadbeef"
     assert summary.semantic_batches_total == 1
     assert summary.semantic_batches_failed == 0
+    assert summary.semantic_status == "success_with_findings"
+    assert summary.semantic_findings == 1
+    assert summary.static_findings == 0
     assert summary.reviewed_files == ["src/math.py"]
     assert summary.unreviewed_files == []
     assert "**[High] Bug**" in summary.intended_comments[0].body
     assert "DRY RUN" in summary.to_markdown()
     assert "Comments that would be published: 1" in summary.to_markdown()
+
+
+def test_successful_empty_semantic_response_has_distinct_status() -> None:
+    client = GitHubClient(token="t", session=_session(), sleeper=lambda _: None)
+    summary = ReviewOrchestrator(
+        client,
+        ReviewPipeline(MockProvider('{"findings": []}')),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.semantic_status == "success_no_findings"
+    assert summary.semantic_batches_failed == 0
+    assert summary.semantic_findings == 0
+    assert summary.total_findings == 0
+    assert summary.errors == []
 
 
 def test_cli_pipeline_wires_configured_ollama_and_review_budgets() -> None:
@@ -111,6 +129,7 @@ def test_cli_pipeline_wires_configured_ollama_and_review_budgets() -> None:
         owner="acme",
         repo="demo",
         pr_number=7,
+        ollama_model="qwen2.5-coder:7b",
         ollama_timeout=42,
         ollama_num_predict=512,
         ollama_num_ctx=4096,
@@ -118,18 +137,21 @@ def test_cli_pipeline_wires_configured_ollama_and_review_budgets() -> None:
         review_code_chars=3500,
         review_analysis_chars=2000,
         review_max_files=4,
+        review_max_findings=2,
     )
 
     pipeline = build_pipeline(config)
 
     assert isinstance(pipeline.provider, OllamaProvider)
     assert pipeline.provider.timeout == 42
+    assert pipeline.provider.model == "qwen2.5-coder:7b"
     assert pipeline.provider.num_predict == 512
     assert pipeline.provider.num_ctx == 4096
     assert pipeline.prompt_builder.max_prompt_chars == 9000
     assert pipeline.prompt_builder.code_chars == 3500
     assert pipeline.prompt_builder.analysis_chars == 2000
     assert pipeline.prompt_builder.max_files == 4
+    assert pipeline.prompt_builder.max_findings == 2
 
 
 def test_orchestrator_preserves_static_findings_and_reports_semantic_timeout() -> None:
@@ -158,6 +180,9 @@ def test_orchestrator_preserves_static_findings_and_reports_semantic_timeout() -
     ).run("acme", "demo", 7)
 
     assert summary.total_findings == 1
+    assert summary.semantic_status == "partial_failure"
+    assert summary.static_findings == 1
+    assert summary.semantic_findings == 0
     assert summary.findings_by_severity == {"High": 1}
     assert any("Semantic review failed" in error for error in summary.errors)
     assert any("timed out after 180 seconds" in error for error in summary.errors)
@@ -202,6 +227,7 @@ def test_cli_exits_nonzero_for_failed_semantic_review(monkeypatch, capsys) -> No
     assert exit_code == 1
     assert "Semantic review failed" in output
     assert "Failed batches: 1" in output
+    assert "Semantic status: failed" in output
     assert "Not reviewed files\n- src/math.py" in output
     assert all(call.args[0] != "POST" for call in session.request.call_args_list)
 
@@ -224,14 +250,16 @@ def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None
 
     summary = ReviewOrchestrator(client, pipeline, dry_run=True).run("acme", "demo", 7)
 
-    assert summary.errors == []
-    assert any("split into 7 bounded batches" in warning for warning in summary.warnings)
-    assert summary.semantic_batches_total == 7
+    assert summary.semantic_status == "partial"
+    assert any("Semantic review scope omitted changed files" in error for error in summary.errors)
+    assert any("Semantic review was partial" in error for error in summary.errors)
+    assert not any("Semantic review failed" in error for error in summary.errors)
+    assert summary.semantic_batches_total == 1
     assert summary.semantic_batches_failed == 0
-    assert len(summary.reviewed_files) == 20
-    assert summary.unreviewed_files == []
-    assert len(pipeline.provider.inputs) == 7
-    assert all(isinstance(prompt, str) and len(prompt) <= 8000 for prompt in pipeline.provider.inputs)
+    assert len(summary.reviewed_files) == 5
+    assert len(summary.unreviewed_files) == 15
+    assert len(pipeline.provider.inputs) == 1
+    assert all(isinstance(prompt, str) and len(prompt) <= 10000 for prompt in pipeline.provider.inputs)
 
 
 def test_orchestrator_publishes_shared_static_findings_and_deduplicates_llm() -> None:
@@ -560,6 +588,49 @@ def test_empty_findings_summary() -> None:
     assert summary.comments_published == 0
     markdown = summary.to_markdown()
     assert "Total findings: 0" in markdown
+
+
+def test_comment_preview_redacts_credentials_from_all_finding_fields() -> None:
+    secret = "supersecretvalue"
+    patch = f"@@ -0,0 +1,1 @@\n+API_KEY = '{secret}'\n"
+    session = _session(
+        files=[
+            {
+                "filename": "src/config.py",
+                "status": "added",
+                "patch": patch,
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+            }
+        ]
+    )
+    response = json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/config.py",
+                    "line": 1,
+                    "category": "Security",
+                    "severity": "High",
+                    "message": f"API_KEY = '{secret}' is committed in source.",
+                    "evidence": f"API_KEY = '{secret}'",
+                    "suggestion": f"Remove API_KEY = '{secret}' and load it from secure configuration.",
+                }
+            ]
+        }
+    )
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    summary = ReviewOrchestrator(
+        client,
+        ReviewPipeline(MockProvider(response)),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    preview = "\n".join(comment.body for comment in summary.intended_comments)
+    assert secret not in preview
+    assert "[REDACTED]" in preview
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
 
 
 def test_modified_file_with_member3_context() -> None:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from src.analysis.rules.security_rules import redact_secret_text
 from src.llm.context import ReviewContextBuilder
 from src.llm.pipeline import ReviewPipeline
 from src.llm.schemas import ReviewFinding
@@ -123,6 +124,19 @@ class ReviewOrchestrator:
         summary.unreviewed_files = list(reviewer.unreviewed_files)
         summary.semantic_batches_total = self.pipeline.last_batch_count
         summary.semantic_batches_failed = self.pipeline.last_failed_batch_count
+        summary.semantic_findings = self.pipeline.last_findings_count
+        summary.static_findings = len(analysis)
+        if review_result.status is ReviewStatus.PARTIAL:
+            if self.pipeline.last_failed_batch_count:
+                summary.semantic_status = (
+                    "partial_failure" if analysis else "failed"
+                )
+            else:
+                summary.semantic_status = "partial"
+        elif summary.semantic_findings:
+            summary.semantic_status = "success_with_findings"
+        else:
+            summary.semantic_status = "success_no_findings"
         if self.pipeline.last_batch_count > 1:
             summary.warnings.append(
                 f"Semantic review was split into {self.pipeline.last_batch_count} bounded batches."
@@ -181,9 +195,13 @@ class ReviewOrchestrator:
                             "line": finding.line_number,
                             "category": category,
                             "severity": severity,
-                            "message": finding.message,
-                            "evidence": finding.evidence,
-                            "suggestion": finding.suggestion or None,
+                            "message": redact_secret_text(finding.message),
+                            "evidence": redact_secret_text(finding.evidence),
+                            "suggestion": (
+                                redact_secret_text(finding.suggestion)
+                                if finding.suggestion
+                                else None
+                            ),
                         }
                     )
                 )

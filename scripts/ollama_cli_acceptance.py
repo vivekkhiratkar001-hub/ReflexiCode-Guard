@@ -26,7 +26,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             payload: object = {
                 "number": 1,
                 "title": "Correct addition implementation",
-                "body": "Expressions come from untrusted users and must never execute Python code.",
+                "body": "The add function must return the sum of its two arguments.",
                 "html_url": "http://fixture.invalid/pull/1",
                 "state": "open",
                 "base": {"ref": "main", "sha": "base-sha"},
@@ -35,13 +35,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
         elif path == "/repos/fixture/semantic-review/pulls/1/files":
             payload = [
                 {
-                    "filename": "src/parser.py",
+                    "filename": "src/math.py",
                     "status": "modified",
                     "patch": (
                         "@@ -1,2 +1,2 @@\n"
-                        " def parse_expression(user_input):\n"
-                        "-    return int(user_input)\n"
-                        "+    return eval(user_input)\n"
+                        " def add(left, right):\n"
+                        "-    return left + right\n"
+                        "+    return left - right\n"
                     ),
                     "additions": 1,
                     "deletions": 1,
@@ -115,11 +115,13 @@ def main() -> int:
         print(result.stderr, file=sys.stderr, end="")
     expected = (
         "Total findings: 1",
-        "src/parser.py:2",
-        "**[High]",
-        "eval(user_input)",
+        "Semantic status: success_with_findings",
+        "src/math.py:2",
+        "left - right",
         "Failed batches: 0",
         "Not reviewed files\n- none",
+        "Comments that would be published: 1",
+        "DRY RUN (no GitHub comments were created)",
     )
     missing = [item for item in expected if not result.stdout.strip() or item not in result.stdout]
     if result.returncode != 0 or missing:
@@ -131,7 +133,7 @@ def main() -> int:
         )
         return 1
     print(
-        "Real-model CLI acceptance passed: controlled security defect detected "
+        "Real-model CLI acceptance passed: controlled arithmetic defect detected "
         f"with changed-line evidence; elapsed_seconds={elapsed:.2f}."
     )
     return 0

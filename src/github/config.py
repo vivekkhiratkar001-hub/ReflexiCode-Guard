@@ -15,13 +15,16 @@ from .exceptions import GitHubConfigError
 
 
 DEFAULT_API_URL = "https://api.github.com"
-DEFAULT_OLLAMA_TIMEOUT = 180
-DEFAULT_OLLAMA_NUM_PREDICT = 768
-DEFAULT_OLLAMA_NUM_CTX = 8192
+DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:7b"
+DEFAULT_OLLAMA_TIMEOUT = 120
+MAX_OLLAMA_TIMEOUT = 300
+DEFAULT_OLLAMA_NUM_PREDICT = 512
+DEFAULT_OLLAMA_NUM_CTX = 4096
 DEFAULT_REVIEW_PROMPT_CHARS = 10000
 DEFAULT_REVIEW_CODE_CHARS = 4000
 DEFAULT_REVIEW_ANALYSIS_CHARS = 2500
 DEFAULT_REVIEW_MAX_FILES = 5
+DEFAULT_REVIEW_MAX_FINDINGS = 3
 
 
 def _truthy(value: str | None, default: bool = False) -> bool:
@@ -44,6 +47,7 @@ class GitHubAppConfig:
     mock_llm_response: str
     rules_file: Path | None
     analysis_file: Path | None
+    ollama_model: str = DEFAULT_OLLAMA_MODEL
     ollama_timeout: int = DEFAULT_OLLAMA_TIMEOUT
     ollama_num_predict: int = DEFAULT_OLLAMA_NUM_PREDICT
     ollama_num_ctx: int = DEFAULT_OLLAMA_NUM_CTX
@@ -51,6 +55,7 @@ class GitHubAppConfig:
     review_code_chars: int = DEFAULT_REVIEW_CODE_CHARS
     review_analysis_chars: int = DEFAULT_REVIEW_ANALYSIS_CHARS
     review_max_files: int = DEFAULT_REVIEW_MAX_FILES
+    review_max_findings: int = DEFAULT_REVIEW_MAX_FINDINGS
     head_sha: str | None = None
 
     def require_token(self, *, for_write: bool) -> str:
@@ -150,12 +155,14 @@ def build_config(
     rules_file: str | None = None,
     analysis_file: str | None = None,
     ollama_timeout: int | None = None,
+    ollama_model: str | None = None,
     ollama_num_predict: int | None = None,
     ollama_num_ctx: int | None = None,
     review_prompt_chars: int | None = None,
     review_code_chars: int | None = None,
     review_analysis_chars: int | None = None,
     review_max_files: int | None = None,
+    review_max_findings: int | None = None,
     event_path: str | None = None,
     publish: bool = False,
 ) -> GitHubAppConfig:
@@ -195,6 +202,10 @@ def build_config(
     if resolved_token is not None:
         resolved_token = resolved_token.strip() or None
 
+    model = (ollama_model or os.environ.get("REFLEXICODE_OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL).strip()
+    if not model or len(model) > 200:
+        raise GitHubConfigError("Ollama model name must contain 1 to 200 characters.")
+
     raw_timeout = os.environ.get("REFLEXICODE_OLLAMA_TIMEOUT")
     try:
         timeout_value = (
@@ -204,11 +215,11 @@ def build_config(
         )
     except ValueError as exc:
         raise GitHubConfigError(
-            "REFLEXICODE_OLLAMA_TIMEOUT must be an integer between 1 and 900 seconds."
+            f"REFLEXICODE_OLLAMA_TIMEOUT must be an integer between 1 and {MAX_OLLAMA_TIMEOUT} seconds."
         ) from exc
-    if timeout_value < 1 or timeout_value > 900:
+    if timeout_value < 1 or timeout_value > MAX_OLLAMA_TIMEOUT:
         raise GitHubConfigError(
-            "Ollama timeout must be an integer between 1 and 900 seconds."
+            f"Ollama timeout must be an integer between 1 and {MAX_OLLAMA_TIMEOUT} seconds."
         )
 
     num_predict = _integer_setting(
@@ -263,6 +274,14 @@ def build_config(
         maximum=20,
         description="maximum selected changed files",
     )
+    max_findings = _integer_setting(
+        review_max_findings,
+        "REFLEXICODE_REVIEW_MAX_FINDINGS",
+        DEFAULT_REVIEW_MAX_FINDINGS,
+        minimum=1,
+        maximum=8,
+        description="maximum semantic findings returned",
+    )
     if code_chars + analysis_chars + 600 + 1500 >= prompt_chars:
         raise GitHubConfigError(
             "Review code and analysis budgets must leave room for rules and instructions "
@@ -304,6 +323,7 @@ def build_config(
             Path(os.environ["REFLEXICODE_ANALYSIS_FILE"])
             if os.environ.get("REFLEXICODE_ANALYSIS_FILE") else None
         ),
+        ollama_model=model,
         ollama_timeout=timeout_value,
         ollama_num_predict=num_predict,
         ollama_num_ctx=num_ctx,
@@ -311,5 +331,6 @@ def build_config(
         review_code_chars=code_chars,
         review_analysis_chars=analysis_chars,
         review_max_files=max_files,
+        review_max_findings=max_findings,
         head_sha=event_sha,
     )

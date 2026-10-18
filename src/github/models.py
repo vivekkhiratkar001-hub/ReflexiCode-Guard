@@ -141,6 +141,9 @@ class ReviewSummary:
     unreviewed_files: list[str] = field(default_factory=list)
     semantic_batches_total: int = 0
     semantic_batches_failed: int = 0
+    semantic_status: str = "not_run"
+    semantic_findings: int = 0
+    static_findings: int = 0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     intended_comments: list[InlineComment] = field(default_factory=list)
@@ -186,6 +189,9 @@ class ReviewSummary:
 {skipped}
 
 ### Semantic review coverage
+- Semantic status: {self.semantic_status}
+- Semantic findings: {self.semantic_findings}
+- Deterministic findings: {self.static_findings}
 - Batches: {self.semantic_batches_total}
 - Failed batches: {self.semantic_batches_failed}
 

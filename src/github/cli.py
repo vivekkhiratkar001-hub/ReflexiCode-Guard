@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token", help="GitHub token (defaults to GITHUB_TOKEN)")
     parser.add_argument("--api-url", help="GitHub API base URL")
     parser.add_argument(
+        "--ollama-model",
+        help="Installed local Ollama model (default qwen2.5-coder:7b)",
+    )
+    parser.add_argument(
         "--ollama-timeout",
         type=int,
         help="Ollama request timeout in seconds (defaults to REFLEXICODE_OLLAMA_TIMEOUT or 180)",
@@ -63,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--review-max-files",
         type=int,
         help="Maximum changed files selected for semantic review (default 5)",
+    )
+    parser.add_argument(
+        "--review-max-findings",
+        type=int,
+        help="Maximum semantic findings requested from Ollama (default 3)",
     )
     parser.add_argument("--event-path", help="Path to a GitHub Actions event JSON file")
     parser.add_argument(
@@ -100,9 +109,11 @@ def build_pipeline(config: GitHubAppConfig) -> ReviewPipeline:
         code_chars=config.review_code_chars,
         analysis_chars=config.review_analysis_chars,
         max_files=config.review_max_files,
+        max_findings=config.review_max_findings,
     )
     return ReviewPipeline(
         OllamaProvider(
+            model=config.ollama_model,
             timeout=config.ollama_timeout,
             num_predict=config.ollama_num_predict,
             num_ctx=config.ollama_num_ctx,
@@ -161,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
             pr_number=args.pr_number,
             token=args.token,
             api_url=args.api_url,
+            ollama_model=args.ollama_model,
             dry_run=True if args.dry_run or (args.dry_run and args.publish) else (
                 False if args.publish else None
             ),
@@ -175,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
             review_code_chars=args.review_code_chars,
             review_analysis_chars=args.review_analysis_chars,
             review_max_files=args.review_max_files,
+            review_max_findings=args.review_max_findings,
             event_path=args.event_path,
             publish=bool(args.publish and not args.dry_run),
         )

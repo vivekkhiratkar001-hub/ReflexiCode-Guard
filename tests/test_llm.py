@@ -83,6 +83,11 @@ class ReviewResponseParserTests(unittest.TestCase):
     def test_no_findings(self) -> None:
         self.assertEqual(self.parser.parse('{"findings": []}', self.context), [])
 
+    def test_parser_enforces_configured_semantic_finding_limit(self) -> None:
+        parser = ReviewResponseParser(max_findings=1)
+        with self.assertRaisesRegex(ReviewResponseError, "exceeded the configured"):
+            parser.parse(response_for(finding_data(), finding_data(message="Another defect.")), self.context)
+
     def test_malformed_json_is_rejected(self) -> None:
         with self.assertRaisesRegex(ReviewResponseError, "valid JSON"):
             self.parser.parse("not a JSON response")
@@ -121,7 +126,7 @@ class ReviewResponseParserTests(unittest.TestCase):
             )
 
     def test_empty_file_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ReviewResponseError, "must not be empty or whitespace-only"):
+        with self.assertRaisesRegex(ReviewResponseError, "schema validation"):
             self.parser.parse(response_for(finding_data(file="   ")), self.context)
 
     def test_file_not_in_changed_code_is_rejected(self) -> None:
@@ -226,21 +231,49 @@ class ReviewResponseParserTests(unittest.TestCase):
                 context,
             )
 
-    def test_analysis_finding_can_support_valid_evidence(self) -> None:
+    def test_static_analysis_message_alone_cannot_support_finding_evidence(self) -> None:
         context = ReviewContextBuilder().build(
             pr_title="Fix math behavior",
             changed_code={FILE: CODE},
             repository_rules=[],
             analysis_findings=[
-                {"file": FILE, "line": 2, "message": "The function subtracts instead of adding."}
+                {
+                    "file": FILE,
+                    "line": 2,
+                    "message": "The function subtracts instead of adding.",
+                    "evidence": "return a - b",
+                }
             ],
             changed_lines={FILE: [1, 2]},
         )
         findings = self.parser.parse(
-            response_for(finding_data(evidence="The function subtracts instead of adding.")),
+            response_for(finding_data(evidence="return a - b")),
             context,
         )
         self.assertEqual(len(findings), 1)
+
+    def test_static_evidence_cannot_support_a_different_changed_line(self) -> None:
+        context = ReviewContextBuilder().build(
+            changed_code={FILE: CODE},
+            repository_rules=[],
+            analysis_findings=[
+                {
+                    "file": FILE,
+                    "line": 2,
+                    "message": "The function subtracts instead of adding.",
+                    "evidence": "return a - b",
+                }
+            ],
+            changed_lines={FILE: [1, 2]},
+            changed_line_content={FILE: {1: "def add(a, b):", 2: "    return a - b"}},
+        )
+        with self.assertRaisesRegex(ReviewResponseError, "does not match the changed line"):
+            self.parser.parse(
+                response_for(
+                    finding_data(line=1, evidence="return a - b")
+                ),
+                context,
+            )
 
     def test_short_bug_message_is_not_treated_as_duplicate(self) -> None:
         findings = self.parser.parse(
@@ -262,10 +295,18 @@ class ReviewResponseParserTests(unittest.TestCase):
         )
         self.assertEqual(len(findings), 2)
 
-    def test_json_extraction_prefers_structured_response_over_prior_braces(self) -> None:
-        raw = 'Some text {} and then {"findings":[{"file":"src/math.py","line":2,"category":"Bug","severity":"High","message":"The function subtracts instead of adding.","evidence":"return a - b","suggestion":"Return a + b instead."}]}'
-        findings = self.parser.parse(raw, self.context)
-        self.assertEqual(len(findings), 1)
+    def test_json_prose_around_response_is_rejected(self) -> None:
+        raw = response_for(finding_data()) + " untrusted trailing text"
+        with self.assertRaisesRegex(ReviewResponseError, "only one JSON object"):
+            self.parser.parse(raw, self.context)
+
+    def test_markdown_wrapped_json_is_rejected(self) -> None:
+        with self.assertRaises(ReviewResponseError):
+            self.parser.parse(f"```json\n{response_for()}\n```", self.context)
+
+    def test_unsupported_finding_category_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ReviewResponseError, "unsupported finding category"):
+            self.parser.parse(response_for(finding_data(category="Mystery")), self.context)
 
     def test_empty_response_is_rejected(self) -> None:
         with self.assertRaisesRegex(ReviewResponseError, "empty response"):
@@ -483,7 +524,7 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertIsInstance(mock.last_input, str)
         self.assertIn("Fix user addition function", mock.last_input)
         self.assertIn("AST/static-analysis findings", mock.last_input)
-        self.assertIn("unchanged lines unless the issue is directly caused", mock.last_input)
+        self.assertIn("explicitly labelled Changed line", mock.last_input)
 
     def test_pipeline_logs_prompt_coverage_without_source_content(self) -> None:
         sensitive = "internal_identifier_should_not_be_logged"
@@ -508,19 +549,18 @@ class ProviderAndPipelineTests(unittest.TestCase):
             pipeline.review(context)
 
         output = "\n".join(logs.output)
-        self.assertIn("files_available=1", output)
-        self.assertIn("files_included=1", output)
+        self.assertIn("selected_files=1", output)
         self.assertIn("changed_lines_available=1", output)
         self.assertGreater(
             int(output.split("changed_lines_included=")[1].split(" ")[0]), 0
         )
-        self.assertIn("findings_available=1", output)
-        self.assertIn("findings_supplied=1", output)
-        self.assertIn("findings_included=1", output)
+        self.assertIn("static_findings_available=1", output)
+        self.assertIn("static_findings_supplied=1", output)
+        self.assertIn("static_findings_included=1", output)
         self.assertIn("estimated_prompt_tokens=", output)
         self.assertNotIn(sensitive, output)
 
-    def test_large_pr_is_split_into_small_bounded_requests(self) -> None:
+    def test_large_pr_uses_one_bounded_request_and_reports_omissions(self) -> None:
         from src.llm.context import ReviewContextBuilder
 
         class RecordingProvider:
@@ -550,32 +590,20 @@ class ProviderAndPipelineTests(unittest.TestCase):
         findings = pipeline.review(context)
 
         assert findings == []
-        assert len(provider.prompts) == 4
+        assert len(provider.prompts) == 1
         assert all(len(prompt) <= 8000 for prompt in provider.prompts)
-        assert all(int(prompt.split("Selected changed files: ", 1)[1].splitlines()[0]) <= 3
-                   for prompt in provider.prompts)
-        assert len(pipeline.last_reviewed_files) == file_count
-        assert pipeline.last_unreviewed_files == ()
-        assert pipeline.last_review_failures == ()
+        assert int(provider.prompts[0].split("Selected changed files: ", 1)[1].splitlines()[0]) == 5
+        assert len(pipeline.last_reviewed_files) == 5
+        assert len(pipeline.last_unreviewed_files) == file_count - 5
+        assert any("scope omitted changed files" in error for error in pipeline.last_review_failures)
+        assert pipeline.last_failed_batch_count == 0
 
-    def test_failed_batch_does_not_discard_successful_batch_results_or_coverage(self) -> None:
+    def test_semantic_request_failure_reports_all_selected_files_unreviewed(self) -> None:
         from src.llm.context import ReviewContextBuilder
 
-        class PartiallyFailingProvider:
-            def __init__(self) -> None:
-                self.calls = 0
-
+        class FailingProvider:
             def review(self, prompt: str) -> str:
-                self.calls += 1
-                if self.calls == 1:
-                    raise RuntimeError("simulated timeout")
-                return response_for(
-                    finding_data(
-                        file="src/module_3.py",
-                        evidence="return 1",
-                        message="The fallback value is incorrect.",
-                    )
-                )
+                raise RuntimeError("simulated timeout")
 
         paths = [f"src/module_{index}.py" for index in range(4)]
         context = ReviewContextBuilder().build(
@@ -583,37 +611,34 @@ class ProviderAndPipelineTests(unittest.TestCase):
             changed_lines={path: [2] for path in paths},
             changed_line_content={path: {2: "    return 1"} for path in paths},
         )
-        pipeline = ReviewPipeline(PartiallyFailingProvider())
+        pipeline = ReviewPipeline(FailingProvider())
 
         findings = pipeline.review(context)
-        assert len(findings) == 1
-        assert findings[0].file == "src/module_3.py"
-        assert pipeline.last_batch_count == 2
+        assert findings == []
+        assert pipeline.last_batch_count == 1
         assert pipeline.last_failed_batch_count == 1
-        assert len(pipeline.last_reviewed_files) == 1
-        assert len(pipeline.last_unreviewed_files) == 3
+        assert pipeline.last_reviewed_files == ()
+        assert len(pipeline.last_unreviewed_files) == 4
         assert any("simulated timeout" in failure for failure in pipeline.last_review_failures)
 
-    def test_duplicate_findings_from_separate_batches_are_removed(self) -> None:
+    def test_case_mismatched_file_path_is_rejected(self) -> None:
         from src.llm.context import ReviewContextBuilder
 
-        class DuplicateProvider:
+        class WrongPathProvider:
             def review(self, prompt: str) -> str:
-                path = "src/math.py" if "\nsrc/math.py\n" in prompt else "SRC/MATH.PY"
-                return response_for(finding_data(file=path))
+                return response_for(finding_data(file="SRC/MATH.PY"))
 
         context = ReviewContextBuilder().build(
-            changed_code={"src/math.py": CODE, "SRC/MATH.PY": CODE},
-            changed_lines={"src/math.py": [2], "SRC/MATH.PY": [2]},
-            changed_line_content={
-                "src/math.py": {2: "    return a - b"},
-                "SRC/MATH.PY": {2: "    return a - b"},
-            },
+            changed_code={"src/math.py": CODE},
+            changed_lines={"src/math.py": [2]},
+            changed_line_content={"src/math.py": {2: "    return a - b"}},
         )
 
-        findings = ReviewPipeline(DuplicateProvider(), max_files_per_batch=1).review(context)
+        pipeline = ReviewPipeline(WrongPathProvider())
+        findings = pipeline.review(context)
 
-        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings, [])
+        self.assertEqual(pipeline.last_failed_batch_count, 1)
 
     def test_context_builder_accepts_structured_pydantic_inputs(self) -> None:
         from pydantic import BaseModel
@@ -681,9 +706,27 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertGreater(result.included_changed_lines, 0)
         self.assertEqual(result.available_findings, 30)
         self.assertEqual(result.supplied_findings, 5)
-        self.assertEqual(result.included_findings, 5)
+        self.assertEqual(result.included_findings, 3)
         self.assertNotIn('"message":"Finding for module 0."', result.prompt)
         self.assertNotIn("changed_line_content", result.prompt)
+
+    def test_prompt_context_lines_are_not_eligible_changed_lines(self) -> None:
+        context = ReviewContextBuilder().build(
+            changed_code={FILE: "one\ntwo\nthree\nfour\nfive\nsix"},
+            changed_lines={FILE: [4]},
+            changed_line_content={
+                FILE: {line: text for line, text in enumerate(
+                    ("one", "two", "three", "four", "five", "six"), start=1
+                )}
+            },
+        )
+
+        result = ReviewPromptBuilder().build_with_metadata(context)
+
+        self.assertIn("Context (not eligible) line 2: two", result.prompt)
+        self.assertIn("Changed line 4: four", result.prompt)
+        self.assertIn("Context (not eligible) line 6: six", result.prompt)
+        self.assertEqual(result.eligible_changed_lines, {FILE: (4,)})
 
     def test_prompt_configurable_limits_select_only_high_priority_files_and_findings(self) -> None:
         changed_code = {
@@ -731,7 +774,7 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertEqual(result.supplied_findings, 2)
         self.assertEqual(result.included_findings, 2)
         self.assertNotIn('"message":"Finding 0"', result.prompt)
-        self.assertIn("Return at most 5 important", result.prompt)
+        self.assertIn("Return at most 3 important", result.prompt)
 
     if __name__ == "__main__":
         unittest.main()

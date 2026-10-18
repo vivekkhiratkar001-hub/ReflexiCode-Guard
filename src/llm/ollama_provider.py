@@ -24,12 +24,12 @@ class OllamaProvider(LLMProvider):
         model: str = "qwen2.5-coder:7b",
         api_url: str = "http://localhost:11434/api/generate",
         timeout: int = 120,
-        num_predict: int = 768,
-        num_ctx: int = 8192,
+        num_predict: int = 512,
+        num_ctx: int = 4096,
         prompt_builder: ReviewPromptBuilder | None = None,
     ) -> None:
-        if not 1 <= timeout <= 900:
-            raise ValueError("timeout must be between 1 and 900 seconds.")
+        if not 1 <= timeout <= 300:
+            raise ValueError("timeout must be between 1 and 300 seconds.")
         if not 64 <= num_predict <= 2048 or not 2048 <= num_ctx <= 32768:
             raise ValueError(
                 "num_predict must be 64-2048 and num_ctx must be 2048-32768."
@@ -71,7 +71,7 @@ class OllamaProvider(LLMProvider):
         fragments: list[str] = []
         final_record: dict[str, Any] | None = None
         logger.info(
-            "Ollama review request started: model=%s prompt_chars=%d "
+            "Ollama review request started: outcome=pending model=%s prompt_chars=%d "
             "estimated_prompt_tokens=%d timeout_seconds=%s num_predict=%d num_ctx=%d",
             self.model,
             len(prompt),
@@ -122,7 +122,7 @@ class OllamaProvider(LLMProvider):
                     break
         except RuntimeError:
             logger.warning(
-                "Ollama response stream was rejected after %.2f seconds; "
+                "Ollama response stream rejected: outcome=invalid_output elapsed_seconds=%.2f "
                 "first_output=%s.",
                 monotonic() - started,
                 (
@@ -141,7 +141,7 @@ class OllamaProvider(LLMProvider):
                 else f"{first_output_at - started:.2f} seconds"
             )
             logger.warning(
-                "Ollama request timed out: model=%s elapsed_seconds=%.2f "
+                "Ollama request timed out: outcome=timed_out model=%s elapsed_seconds=%.2f "
                 "first_output=%s state=%s",
                 self.model,
                 elapsed,
@@ -153,7 +153,7 @@ class OllamaProvider(LLMProvider):
             ) from exc
         except requests.exceptions.ConnectionError as exc:
             logger.warning(
-                "Ollama request could not connect after %.2f seconds.",
+                "Ollama request failed: outcome=failed reason=connection elapsed_seconds=%.2f.",
                 monotonic() - started,
             )
             raise RuntimeError(
@@ -162,14 +162,15 @@ class OllamaProvider(LLMProvider):
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "unknown"
             logger.warning(
-                "Ollama returned HTTP %s after %.2f seconds.",
+                "Ollama request failed: outcome=failed reason=http status=%s elapsed_seconds=%.2f.",
                 status,
                 monotonic() - started,
             )
             raise RuntimeError(f"Ollama returned HTTP {status}.") from exc
         except requests.exceptions.RequestException as exc:
             logger.warning(
-                "Ollama streaming request failed after %.2f seconds.",
+                "Ollama request failed: outcome=failed reason=%s elapsed_seconds=%.2f.",
+                type(exc).__name__,
                 monotonic() - started,
             )
             raise RuntimeError(
@@ -185,7 +186,7 @@ class OllamaProvider(LLMProvider):
         )
         if final_record is None:
             logger.warning(
-                "Ollama stream ended without a completion marker after %.2f seconds.",
+                "Ollama response stream incomplete: outcome=invalid_output elapsed_seconds=%.2f.",
                 elapsed,
             )
             raise RuntimeError(
@@ -193,7 +194,7 @@ class OllamaProvider(LLMProvider):
             )
         if final_record.get("done_reason") == "length":
             logger.warning(
-                "Ollama response reached num_predict=%d after %.2f seconds.",
+                "Ollama response truncated: outcome=invalid_output num_predict=%d elapsed_seconds=%.2f.",
                 self.num_predict,
                 elapsed,
             )
@@ -204,13 +205,13 @@ class OllamaProvider(LLMProvider):
         review_text = "".join(fragments)
         if not review_text.strip():
             logger.warning(
-                "Ollama returned an empty review after %.2f seconds.",
+                "Ollama response empty: outcome=invalid_output elapsed_seconds=%.2f.",
                 elapsed,
             )
             raise RuntimeError("Ollama returned an empty review response.")
 
         logger.info(
-            "Ollama review request completed: elapsed_seconds=%.2f "
+                "Ollama review request completed: outcome=completed elapsed_seconds=%.2f "
             "first_output_seconds=%s output_chars=%d generated_tokens=%s "
             "prompt_eval_seconds=%s generation_seconds=%s",
             elapsed,

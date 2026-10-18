@@ -208,6 +208,23 @@ class DeterministicStaticRulesTests(unittest.TestCase):
         self.assertEqual(len(singleton), 1)
         self.assertEqual(singleton[0].line_number, 4)
 
+    def test_singleton_comparisons_detect_constants_on_either_side(self) -> None:
+        diff = (
+            "diff --git a/mod.py b/mod.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/mod.py\n"
+            "@@ -0,0 +1,4 @@\n"
+            "+def check(value):\n"
+            "+    if False == value: pass\n"
+            "+    if value is True: pass\n"
+            "+    if 0 is value: pass\n"
+        )
+        findings = analyze_pr(PRContext("org", "repo", 31, "test", "", "b", "h", diff=diff))
+        self.assertTrue(any("singleton" in finding.message.lower() and finding.line_number == 2 for finding in findings))
+        identity = [finding for finding in findings if "using 'is'" in finding.message.lower()]
+        self.assertEqual([finding.line_number for finding in identity], [4])
+
     def test_duplicate_dict_key_detected(self) -> None:
         diff = (
             "diff --git a/mod.py b/mod.py\n"
@@ -438,6 +455,19 @@ class ComplexityRulesTests(unittest.TestCase):
         func = tree.body[0]
         # Base 1 + 2 ifs = 3
         self.assertEqual(calculate_cyclomatic_complexity(func), 3)
+
+    def test_nested_function_branches_are_not_counted_for_outer_function(self) -> None:
+        tree = ast.parse(
+            "def outer(value):\n"
+            "    def inner(item):\n"
+            "        if item:\n"
+            "            if item > 1:\n"
+            "                return 1\n"
+            "        return 0\n"
+            "    return inner(value)\n"
+        )
+        self.assertEqual(calculate_cyclomatic_complexity(tree.body[0]), 1)
+        self.assertEqual(calculate_cyclomatic_complexity(tree.body[0].body[0]), 3)
 
     def test_parameter_count_calculation(self) -> None:
         code = "def sample(a, b, c, d, e, *args, **kwargs): pass\n"
