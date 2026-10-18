@@ -1,13 +1,13 @@
 {
   "overall": {
     "total_expected": 9,
-    "total_reported": 10,
+    "total_reported": 9,
     "true_positives": 9,
-    "false_positives": 1,
+    "false_positives": 0,
     "false_negatives": 0,
-    "precision": 0.9,
+    "precision": 1.0,
     "recall": 1.0,
-    "f1_score": 0.9474,
+    "f1_score": 1.0,
     "exact_localization_matches": 9,
     "localization_accuracy": 1.0
   },
@@ -67,17 +67,17 @@
       "title": "Add complex decision engine",
       "metric": {
         "total_expected": 2,
-        "total_reported": 3,
+        "total_reported": 2,
         "true_positives": 2,
-        "false_positives": 1,
+        "false_positives": 0,
         "false_negatives": 0,
-        "precision": 0.6667,
+        "precision": 1.0,
         "recall": 1.0,
-        "f1_score": 0.8,
+        "f1_score": 1.0,
         "exact_localization_matches": 2,
         "localization_accuracy": 1.0
       },
-      "findings_count": 3,
+      "findings_count": 2,
       "expected_count": 2
     },
     "PR_105": {
