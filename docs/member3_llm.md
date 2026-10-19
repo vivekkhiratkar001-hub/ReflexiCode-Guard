@@ -96,12 +96,26 @@ The active project implementation uses a local Ollama model:
 
 The provider follows the pattern:
 
-1. Build one prioritized prompt within configured character and file limits.
-2. Send it once to the configured local Ollama endpoint; no automatic model fallback or retry is performed.
+1. Split the prioritized changed-file set into prompts within configured character and file limits.
+2. Send no more than five prompts to the configured local Ollama endpoint; no automatic model fallback or retry is performed.
 3. Validate the HTTP response.
 4. Read the result JSON.
 5. Extract only a completed response (incomplete streams and token-limit truncation fail).
 6. Return JSON text for downstream parsing.
+
+All prompt preparation, model execution, and parsing share a 240-second aggregate
+budget. Before each request, the pipeline checks remaining time and temporarily
+reduces a provider's request timeout, reserving five seconds for timeout and
+cleanup overhead; it restores the configured timeout afterward.
+The Ollama provider also checks elapsed time while consuming the stream and closes
+the response in all cases. Requests' socket read timeout is an inactivity timeout,
+not a hard cancellation primitive: a read already in progress can still outlast
+its configured timeout and the aggregate deadline.
+Closing the response releases client resources but does not guarantee immediate
+cancellation of model work on the Ollama server, and Python cannot safely cancel
+an arbitrary synchronous provider. The pipeline therefore stops scheduling
+additional requests as soon as the budget is exhausted and reports an incomplete
+result rather than claiming coverage.
 
 The provider logs model, prompt size, estimated input tokens, generation options,
 configured timeout, elapsed time, completion/timeout/invalid-output outcome, and
@@ -148,6 +162,12 @@ Default bounds are 10,000 prompt characters, 4,000 changed-code characters,
 lines are prioritized and include nearby patch context where it fits. Analysis
 evidence is deduplicated and its source excerpt is not repeated in the findings
 section. Omitted files/lines are not claimed as semantically reviewed.
+
+Coverage is reported separately for fully reviewed, partially reviewed, and
+unreviewed files. A file is only marked reviewed after its complete batch has
+returned valid JSON and passed context validation. Failed batches and files that
+do not fit within five requests remain unreviewed; partial semantic findings and
+deterministic findings from other batches are retained.
 
 The implementation is intentionally conservative. It does not ask the model to invent files, rules, or evidence.
 

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .enums import ReviewStatus
 
@@ -30,8 +30,18 @@ class AnalysisFinding:
 
 
 @dataclass
+class AnalysisResult:
+    findings: List[AnalysisFinding] = field(default_factory=list)
+
+
+@dataclass
 class ReviewResult:
     pr_number: int
     findings: List[AnalysisFinding]
     summary: str
     status: ReviewStatus
+    head_sha: Optional[str] = None
+    comments: List[Any] = field(default_factory=list)
+    block_merge: bool = False
+    severity_counts: Dict[str, int] = field(default_factory=dict)
+

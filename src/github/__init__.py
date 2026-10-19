@@ -13,7 +13,7 @@ from .exceptions import (
 )
 from .models import FileChange, InlineComment, PullRequestInfo, ReviewSummary
 from .orchestrator import ReviewOrchestrator
-from .pipeline import review_pr
+from .pipeline import publish_review, review_pr
 
 __all__ = [
     "FileChange",
@@ -32,5 +32,7 @@ __all__ = [
     "ReviewSummary",
     "build_config",
     "prepare_review_inputs",
+    "publish_review",
     "review_pr",
 ]
+

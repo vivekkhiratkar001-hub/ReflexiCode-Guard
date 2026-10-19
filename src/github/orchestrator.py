@@ -121,11 +121,16 @@ class ReviewOrchestrator:
                 + " ".join(reviewer.context_limitations)
             )
         summary.reviewed_files = list(reviewer.reviewed_files)
+        summary.partially_reviewed_files = list(
+            reviewer.partially_reviewed_files
+        )
         summary.unreviewed_files = list(reviewer.unreviewed_files)
         summary.semantic_batches_total = self.pipeline.last_batch_count
         summary.semantic_batches_failed = self.pipeline.last_failed_batch_count
         summary.semantic_findings = self.pipeline.last_findings_count
         summary.static_findings = len(analysis)
+        summary.semantic_elapsed_seconds = self.pipeline.last_elapsed_seconds
+        summary.semantic_budget_seconds = self.pipeline.review_budget_seconds
         if review_result.status is ReviewStatus.PARTIAL:
             if self.pipeline.last_failed_batch_count:
                 summary.semantic_status = (
@@ -222,6 +227,9 @@ class ReviewOrchestrator:
     ) -> ReviewSummary:
         summary.total_findings = len(findings)
         summary.findings_by_severity = dict(Counter(item.severity for item in findings))
+        summary.block_merge = any(
+            item.severity.casefold() in {"high", "critical"} for item in findings
+        )
 
         comments, unmapped = FindingCommentMapper(files, patches).map_findings(findings)
         summary.unmapped_findings.extend(unmapped)

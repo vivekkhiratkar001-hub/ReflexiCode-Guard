@@ -62,6 +62,7 @@ class OllamaProvider(LLMProvider):
             "options": {
                 "num_predict": self.num_predict,
                 "num_ctx": self.num_ctx,
+                "temperature": 0,
             },
         }
 
@@ -70,12 +71,26 @@ class OllamaProvider(LLMProvider):
         response = None
         fragments: list[str] = []
         final_record: dict[str, Any] | None = None
+        estimated_prompt_tokens = (len(prompt) + 3) // 4
+        if estimated_prompt_tokens + self.num_predict > self.num_ctx:
+            logger.warning(
+                "Ollama context overflow: estimated_prompt_tokens=%d num_predict=%d num_ctx=%d",
+                estimated_prompt_tokens,
+                self.num_predict,
+                self.num_ctx,
+            )
+            raise ValueError(
+                f"The estimated request size ({estimated_prompt_tokens} prompt tokens + "
+                f"{self.num_predict} generation tokens = {estimated_prompt_tokens + self.num_predict}) "
+                f"exceeds the configured Ollama context window ({self.num_ctx} tokens)."
+            )
+
         logger.info(
             "Ollama review request started: outcome=pending model=%s prompt_chars=%d "
             "estimated_prompt_tokens=%d timeout_seconds=%s num_predict=%d num_ctx=%d",
             self.model,
             len(prompt),
-            (len(prompt) + 3) // 4,
+            estimated_prompt_tokens,
             self.timeout,
             self.num_predict,
             self.num_ctx,
@@ -89,6 +104,10 @@ class OllamaProvider(LLMProvider):
             )
             response.raise_for_status()
             for raw_chunk in response.iter_lines(decode_unicode=True):
+                if monotonic() - started >= self.timeout:
+                    raise requests.exceptions.Timeout(
+                        "The total Ollama request duration exceeded its deadline."
+                    )
                 if not raw_chunk:
                     continue
                 if isinstance(raw_chunk, bytes):
@@ -120,6 +139,10 @@ class OllamaProvider(LLMProvider):
                 if chunk.get("done") is True:
                     final_record = chunk
                     break
+            if monotonic() - started >= self.timeout:
+                raise requests.exceptions.Timeout(
+                    "The total Ollama request duration exceeded its deadline."
+                )
         except RuntimeError:
             logger.warning(
                 "Ollama response stream rejected: outcome=invalid_output elapsed_seconds=%.2f "

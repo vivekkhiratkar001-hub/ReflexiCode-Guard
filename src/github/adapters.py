@@ -129,6 +129,7 @@ class SharedContractReviewer:
         self.context_limitations: tuple[str, ...] = ()
         self.review_failures: tuple[str, ...] = ()
         self.reviewed_files: tuple[str, ...] = ()
+        self.partially_reviewed_files: tuple[str, ...] = ()
         self.unreviewed_files: tuple[str, ...] = ()
 
     def review(
@@ -175,25 +176,31 @@ class SharedContractReviewer:
             self.context_limitations = self.pipeline.last_context_limitations
             self.review_failures = self.pipeline.last_review_failures
             self.reviewed_files = self.pipeline.last_reviewed_files
+            self.partially_reviewed_files = (
+                self.pipeline.last_partially_reviewed_files
+            )
             self.unreviewed_files = self.pipeline.last_unreviewed_files
 
-        static_evidence = {
-            (
-                finding.file_path.replace("\\", "/").casefold(),
-                finding.line_number,
-                "".join(finding.evidence.split()).casefold(),
-            )
-            for finding in findings
-        }
+        def _is_duplicate_of_static(semantic: ReviewFinding) -> bool:
+            sem_file = semantic.file.replace("\\", "/").casefold()
+            sem_line = semantic.line
+            sem_ev = "".join(semantic.evidence.split()).casefold()
+            for stat in findings:
+                if (
+                    stat.file_path.replace("\\", "/").casefold() == sem_file
+                    and stat.line_number == sem_line
+                ):
+                    stat_ev = "".join(stat.evidence.split()).casefold()
+                    if sem_ev == stat_ev:
+                        return True
+                    if stat_ev and sem_ev and (stat_ev in sem_ev or sem_ev in stat_ev):
+                        return True
+            return False
+
         unique_semantic = [
             finding
             for finding in semantic_findings
-            if (
-                finding.file.replace("\\", "/").casefold(),
-                finding.line,
-                "".join(finding.evidence.split()).casefold(),
-            )
-            not in static_evidence
+            if not _is_duplicate_of_static(finding)
         ]
         return findings + [
             AnalysisFinding(

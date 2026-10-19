@@ -338,6 +338,7 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["json"]["options"], {
             "num_predict": 512,
             "num_ctx": 4096,
+            "temperature": 0,
         })
         log_output = "\n".join(logs.output)
         self.assertIn("prompt_chars=24", log_output)
@@ -560,7 +561,7 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertIn("estimated_prompt_tokens=", output)
         self.assertNotIn(sensitive, output)
 
-    def test_large_pr_uses_one_bounded_request_and_reports_omissions(self) -> None:
+    def test_large_pr_is_split_into_bounded_requests_and_reports_coverage(self) -> None:
         from src.llm.context import ReviewContextBuilder
 
         class RecordingProvider:
@@ -590,12 +591,13 @@ class ProviderAndPipelineTests(unittest.TestCase):
         findings = pipeline.review(context)
 
         assert findings == []
-        assert len(provider.prompts) == 1
+        assert len(provider.prompts) == 3
         assert all(len(prompt) <= 8000 for prompt in provider.prompts)
         assert int(provider.prompts[0].split("Selected changed files: ", 1)[1].splitlines()[0]) == 5
-        assert len(pipeline.last_reviewed_files) == 5
-        assert len(pipeline.last_unreviewed_files) == file_count - 5
-        assert any("scope omitted changed files" in error for error in pipeline.last_review_failures)
+        assert len(pipeline.last_reviewed_files) == file_count
+        assert pipeline.last_partially_reviewed_files == ()
+        assert pipeline.last_unreviewed_files == ()
+        assert pipeline.last_review_failures == ()
         assert pipeline.last_failed_batch_count == 0
 
     def test_semantic_request_failure_reports_all_selected_files_unreviewed(self) -> None:

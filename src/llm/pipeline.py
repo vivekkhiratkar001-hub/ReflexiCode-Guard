@@ -1,6 +1,7 @@
 """Small end-to-end orchestration for semantic PR review."""
 
 import logging
+from math import isfinite
 from time import monotonic
 
 from .context import ReviewContext
@@ -11,6 +12,11 @@ from .schemas import ReviewFinding
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_REVIEW_BUDGET_SECONDS = 240.0
+MAX_REVIEW_REQUESTS = 5
+MIN_REVIEW_REQUEST_BUDGET_SECONDS = 1.0
+REQUEST_TIMEOUT_SAFETY_MARGIN_SECONDS = 5.0
+
 
 class ReviewPipeline:
     """Connect context, prompt, provider, and validated review findings."""
@@ -20,7 +26,16 @@ class ReviewPipeline:
         provider: LLMProvider,
         prompt_builder: ReviewPromptBuilder | None = None,
         parser: ReviewResponseParser | None = None,
+        *,
+        review_budget_seconds: float = DEFAULT_REVIEW_BUDGET_SECONDS,
     ) -> None:
+        if (
+            isinstance(review_budget_seconds, bool)
+            or not isinstance(review_budget_seconds, (int, float))
+            or not isfinite(review_budget_seconds)
+            or review_budget_seconds <= 0
+        ):
+            raise ValueError("review_budget_seconds must be positive.")
         self.provider = provider
         self.prompt_builder = prompt_builder or ReviewPromptBuilder()
         self.parser = parser or ReviewResponseParser(
@@ -29,163 +44,285 @@ class ReviewPipeline:
         self.last_context_limitations: tuple[str, ...] = ()
         self.last_review_failures: tuple[str, ...] = ()
         self.last_reviewed_files: tuple[str, ...] = ()
+        self.last_partially_reviewed_files: tuple[str, ...] = ()
         self.last_unreviewed_files: tuple[str, ...] = ()
         self.last_batch_count = 0
         self.last_failed_batch_count = 0
         self.last_findings_count = 0
+        self.last_elapsed_seconds = 0.0
+        self.review_budget_seconds = float(review_budget_seconds)
 
     def review(self, context: ReviewContext) -> list[ReviewFinding]:
-        """Review one prioritized, bounded subset and report omissions explicitly."""
+        """Review prioritized batches within one aggregate wall-clock budget."""
+        started = monotonic()
+        deadline = started + self.review_budget_seconds
         paths = self._ranked_paths(context)
         if not paths:
-            self._set_result((), (), (), (), 0, 0)
+            self._set_result((), (), (), (), (), 0, 0, 0, monotonic() - started)
             return []
 
-        preparation_started = monotonic()
-        provider_started: float | None = None
-        parsing_started: float | None = None
         limitations: list[str] = []
         failures: list[str] = []
-        reviewed: list[str] = []
+        reviewed: set[str] = set()
+        partially_reviewed: set[str] = set()
         findings: list[ReviewFinding] = []
-        built_prompt = None
-        request_failed = False
-        try:
-            built_prompt = self.prompt_builder.build_with_metadata(context)
-            limitations.extend(built_prompt.limitations)
-            included = list(built_prompt.included_files)
-            eligible_context = self._context_for_files(context, included)
-            eligible_lines = built_prompt.eligible_changed_lines or {}
-            eligible_keys = {
-                path.replace("\\", "/"): set(lines)
-                for path, lines in eligible_lines.items()
-            }
-            eligible_context = eligible_context.model_copy(
-                update={
-                    "changed_lines": {
-                        path: [
-                            line
-                            for line in lines
-                            if line in eligible_keys.get(
-                                path.replace("\\", "/"), set()
-                            )
-                        ]
-                        for path, lines in (eligible_context.changed_lines or {}).items()
-                    },
-                    "changed_line_content": {
-                        path: {
-                            line: text
-                            for line, text in line_map.items()
-                            if line
-                            in eligible_keys.get(
-                                path.replace("\\", "/"), set()
-                            )
-                        }
-                        for path, line_map in eligible_context.changed_line_content.items()
-                    },
-                    "analysis_findings": list(built_prompt.included_analysis_findings),
+        attempted = 0
+        failed = 0
+        batch_size = self.prompt_builder.max_files
+        batches = [
+            paths[index : index + batch_size]
+            for index in range(0, len(paths), batch_size)
+        ]
+
+        for batch_index, batch_paths in enumerate(
+            batches[:MAX_REVIEW_REQUESTS], start=1
+        ):
+            if attempted >= MAX_REVIEW_REQUESTS:
+                break
+            if deadline - monotonic() < (
+                MIN_REVIEW_REQUEST_BUDGET_SECONDS
+                + REQUEST_TIMEOUT_SAFETY_MARGIN_SECONDS
+            ):
+                failures.append(
+                    f"Semantic review budget exhausted before batch {batch_index}; "
+                    "no additional model request was started."
+                )
+                break
+
+            preparation_started = monotonic()
+            provider_started: float | None = None
+            parsing_started: float | None = None
+            try:
+                batch_context = self._context_for_files(context, batch_paths)
+                built_prompt = self.prompt_builder.build_with_metadata(batch_context)
+                limitations.extend(built_prompt.limitations)
+                remaining = deadline - monotonic()
+                if remaining < (
+                    MIN_REVIEW_REQUEST_BUDGET_SECONDS
+                    + REQUEST_TIMEOUT_SAFETY_MARGIN_SECONDS
+                ):
+                    raise RuntimeError(
+                        "review budget exhausted during prompt preparation; "
+                        "no model request was started"
+                    )
+
+                included = list(built_prompt.included_files)
+                if not included:
+                    raise RuntimeError(
+                        "No changed source lines fit in the semantic-review prompt."
+                    )
+                eligible_context = self._context_for_files(batch_context, included)
+                eligible_lines = built_prompt.eligible_changed_lines or {}
+                eligible_keys = {
+                    path.replace("\\", "/"): set(lines)
+                    for path, lines in eligible_lines.items()
                 }
-            )
-            if not included:
-                raise RuntimeError("No changed source lines fit in the semantic-review prompt.")
+                eligible_context = eligible_context.model_copy(
+                    update={
+                        "changed_lines": {
+                            path: [
+                                line
+                                for line in lines
+                                if line
+                                in eligible_keys.get(path.replace("\\", "/"), set())
+                            ]
+                            for path, lines in (eligible_context.changed_lines or {}).items()
+                        },
+                        "changed_line_content": {
+                            path: {
+                                line: text
+                                for line, text in line_map.items()
+                                if line
+                                in eligible_keys.get(path.replace("\\", "/"), set())
+                            }
+                            for path, line_map in eligible_context.changed_line_content.items()
+                        },
+                        "analysis_findings": list(built_prompt.included_analysis_findings),
+                    }
+                )
 
-            logger.info(
-                "Semantic request prepared: model=%s prompt_chars=%d "
-                "estimated_prompt_tokens=%d selected_files=%d changed_lines=%d "
-                "static_findings=%d generation_options=%s timeout_seconds=%s",
-                getattr(self.provider, "model", "custom"),
-                len(built_prompt.prompt),
-                (len(built_prompt.prompt) + 3) // 4,
-                len(built_prompt.included_files),
-                built_prompt.included_changed_lines,
-                built_prompt.included_findings,
-                {
-                    "num_predict": getattr(self.provider, "num_predict", "provider-default"),
-                    "num_ctx": getattr(self.provider, "num_ctx", "provider-default"),
-                },
-                getattr(self.provider, "timeout", "provider-default"),
-            )
-            provider_started = monotonic()
-            raw_response = self.provider.review(built_prompt.prompt)
-            provider_seconds = monotonic() - provider_started
-            parsing_started = monotonic()
-            findings = self.parser.parse(raw_response, eligible_context)
-            parsing_seconds = monotonic() - parsing_started
-            reviewed.extend(included)
-        except (RuntimeError, ReviewResponseError, ValueError) as error:
-            request_failed = True
-            logger.warning(
-                "Semantic review failed: prompt_preparation_seconds=%.3f "
-                "model_wait_seconds=%.3f response_parse_seconds=%.3f exception=%s",
-                monotonic() - preparation_started,
-                monotonic() - provider_started if provider_started is not None else 0.0,
-                monotonic() - parsing_started if parsing_started is not None else 0.0,
-                type(error).__name__,
-            )
-            reason = (
-                f"Member 3 rejected the model response: {error}"
-                if isinstance(error, ReviewResponseError)
-                else f"failed ({type(error).__name__}): {error}"
-            )
-            failures.append(f"Semantic review {reason}")
-            provider_seconds = monotonic() - provider_started if provider_started else 0.0
-            parsing_seconds = monotonic() - parsing_started if parsing_started else 0.0
-        else:
-            logger.info(
-                "Semantic review completed: prompt_chars=%d estimated_prompt_tokens=%d "
-                "selected_files=%d changed_lines_available=%d changed_lines_included=%d "
-                "static_findings_available=%d static_findings_supplied=%d "
-                "static_findings_included=%d semantic_findings=%d "
-                "prompt_preparation_seconds=%.3f model_wait_seconds=%.3f "
-                "response_parse_seconds=%.3f",
-                len(built_prompt.prompt),
-                (len(built_prompt.prompt) + 3) // 4,
-                len(built_prompt.included_files),
-                sum(len(set(lines)) for lines in (context.changed_lines or {}).values()),
-                built_prompt.included_changed_lines,
-                len(context.analysis_findings),
-                built_prompt.supplied_findings,
-                built_prompt.included_findings,
-                len(findings),
-                provider_started - preparation_started,
-                provider_seconds,
-                parsing_seconds,
-            )
+                remaining = deadline - monotonic()
+                if remaining < (
+                    MIN_REVIEW_REQUEST_BUDGET_SECONDS
+                    + REQUEST_TIMEOUT_SAFETY_MARGIN_SECONDS
+                ):
+                    raise RuntimeError(
+                        "review budget exhausted before model execution; "
+                        "no model request was started"
+                    )
+                configured_timeout = getattr(self.provider, "timeout", None)
+                timeout_adjusted = (
+                    isinstance(configured_timeout, (int, float))
+                    and not isinstance(configured_timeout, bool)
+                    and configured_timeout > 0
+                )
+                if timeout_adjusted:
+                    setattr(
+                        self.provider,
+                        "timeout",
+                        min(
+                            float(configured_timeout),
+                            remaining - REQUEST_TIMEOUT_SAFETY_MARGIN_SECONDS,
+                        ),
+                    )
+                try:
+                    logger.info(
+                        "Semantic request prepared: batch=%d/%d model=%s prompt_chars=%d "
+                        "estimated_prompt_tokens=%d selected_files=%d "
+                        "changed_lines_available=%d changed_lines_included=%d "
+                        "static_findings_available=%d static_findings_supplied=%d "
+                        "static_findings_included=%d generation_options=%s "
+                        "request_timeout_seconds=%s aggregate_budget_remaining_seconds=%.2f",
+                        batch_index,
+                        min(len(batches), MAX_REVIEW_REQUESTS),
+                        getattr(self.provider, "model", "custom"),
+                        len(built_prompt.prompt),
+                        (len(built_prompt.prompt) + 3) // 4,
+                        len(built_prompt.included_files),
+                        sum(
+                            len(set(lines))
+                            for lines in (batch_context.changed_lines or {}).values()
+                        ),
+                        built_prompt.included_changed_lines,
+                        len(batch_context.analysis_findings),
+                        built_prompt.supplied_findings,
+                        built_prompt.included_findings,
+                        {
+                            "num_predict": getattr(self.provider, "num_predict", "provider-default"),
+                            "num_ctx": getattr(self.provider, "num_ctx", "provider-default"),
+                        },
+                        getattr(self.provider, "timeout", "provider-default"),
+                        remaining,
+                    )
+                    if deadline - monotonic() < (
+                        MIN_REVIEW_REQUEST_BUDGET_SECONDS
+                        + REQUEST_TIMEOUT_SAFETY_MARGIN_SECONDS
+                    ):
+                        raise RuntimeError(
+                            "review budget exhausted before model execution; "
+                            "no model request was started"
+                        )
+                    attempted += 1
+                    provider_started = monotonic()
+                    raw_response = self.provider.review(built_prompt.prompt)
+                finally:
+                    if timeout_adjusted:
+                        setattr(self.provider, "timeout", configured_timeout)
+                provider_seconds = monotonic() - provider_started
+                if deadline - monotonic() <= 0:
+                    raise RuntimeError("review budget exhausted during model execution")
 
-        unreviewed = [path for path in paths if path not in set(reviewed)]
+                parsing_started = monotonic()
+                batch_findings = self.parser.parse(raw_response, eligible_context)
+                findings.extend(batch_findings)
+                if deadline - monotonic() <= 0:
+                    raise RuntimeError("review budget exhausted during response parsing")
+
+                line_lookup = {
+                    path.replace("\\", "/"): set(lines)
+                    for path, lines in (context.changed_lines or {}).items()
+                }
+                eligible_lookup = {
+                    path.replace("\\", "/"): set(lines)
+                    for path, lines in eligible_lines.items()
+                }
+                for path in included:
+                    key = path.replace("\\", "/")
+                    changed = line_lookup.get(key, set())
+                    supplied = eligible_lookup.get(key, set())
+                    if changed and changed.issubset(supplied):
+                        reviewed.add(path)
+                    elif changed.intersection(supplied):
+                        partially_reviewed.add(path)
+                    else:
+                        failures.append(
+                            f"Semantic review did not include changed lines for {path}."
+                        )
+                logger.info(
+                    "Semantic batch completed: batch=%d prompt_preparation_seconds=%.3f "
+                    "model_wait_seconds=%.3f response_parse_seconds=%.3f "
+                    "semantic_findings=%d",
+                    batch_index,
+                    provider_started - preparation_started,
+                    provider_seconds,
+                    monotonic() - parsing_started,
+                    len(batch_findings),
+                )
+            except (RuntimeError, ReviewResponseError, ValueError, AttributeError) as error:
+                failed += 1
+                logger.warning(
+                    "Semantic batch failed: batch=%d prompt_preparation_seconds=%.3f "
+                    "model_wait_seconds=%.3f response_parse_seconds=%.3f exception=%s",
+                    batch_index,
+                    monotonic() - preparation_started,
+                    monotonic() - provider_started if provider_started is not None else 0.0,
+                    monotonic() - parsing_started if parsing_started is not None else 0.0,
+                    type(error).__name__,
+                )
+                if isinstance(error, ReviewResponseError):
+                    reason = f"Member 3 rejected the model response: {error}"
+                elif isinstance(error, RuntimeError):
+                    reason = f"failed (RuntimeError): {error}"
+                else:
+                    reason = f"failed ({type(error).__name__}): {error}"
+                failures.append(f"Semantic review batch {batch_index} {reason}")
+
+        if len(batches) > MAX_REVIEW_REQUESTS and attempted >= MAX_REVIEW_REQUESTS:
+            failures.append(
+                f"Semantic review request limit ({MAX_REVIEW_REQUESTS}) reached; "
+                "remaining batches were not started."
+            )
+        reviewed.difference_update(partially_reviewed)
+        unreviewed = [
+            path
+            for path in paths
+            if path not in reviewed and path not in partially_reviewed
+        ]
         if unreviewed:
             failures.append(
                 "Semantic review scope omitted changed files: "
                 + ", ".join(unreviewed)
             )
+        if partially_reviewed:
+            failures.append(
+                "Semantic review only partially covered changed lines in: "
+                + ", ".join(path for path in paths if path in partially_reviewed)
+            )
+        final_findings = deduplicate_findings(findings)
         self._set_result(
             limitations,
             failures,
-            reviewed,
+            [path for path in paths if path in reviewed],
+            [path for path in paths if path in partially_reviewed],
             unreviewed,
-            1,
-            int(request_failed),
-            len(findings),
+            attempted,
+            failed,
+            len(final_findings),
+            monotonic() - started,
         )
-        return deduplicate_findings(findings)
+        return final_findings
 
     def _set_result(
         self,
         limitations: tuple[str, ...] | list[str],
         failures: tuple[str, ...] | list[str],
         reviewed: tuple[str, ...] | list[str],
+        partially_reviewed: tuple[str, ...] | list[str],
         unreviewed: tuple[str, ...] | list[str],
         batch_count: int,
         failed_batch_count: int,
         findings_count: int = 0,
+        elapsed_seconds: float = 0.0,
     ) -> None:
         self.last_context_limitations = tuple(dict.fromkeys(limitations))
         self.last_review_failures = tuple(failures)
         self.last_reviewed_files = tuple(dict.fromkeys(reviewed))
+        self.last_partially_reviewed_files = tuple(dict.fromkeys(partially_reviewed))
         self.last_unreviewed_files = tuple(dict.fromkeys(unreviewed))
         self.last_batch_count = batch_count
         self.last_failed_batch_count = failed_batch_count
         self.last_findings_count = findings_count
+        self.last_elapsed_seconds = max(0.0, elapsed_seconds)
 
     @staticmethod
     def _ranked_paths(context: ReviewContext) -> list[str]:

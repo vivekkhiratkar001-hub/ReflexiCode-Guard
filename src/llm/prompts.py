@@ -153,7 +153,11 @@ Use repository rules as project-specific constraints.
 Use AST/static findings as supporting evidence. Do not duplicate them.
 Do not repeat a supplied deterministic finding. Do not invent files, lines, rules,
 or evidence. Report only concrete correctness or security defects supported by
-exact supplied evidence. Do not report style or speculative concerns.
+exact supplied evidence. For every finding, copy the evidence verbatim from one
+explicitly labelled Changed line, including its punctuation, and cite that same
+line number. Do not paraphrase, combine lines, or use Context lines. If a claim
+cannot be supported by an exact quote from its cited Changed line, omit it.
+Do not report style or speculative concerns.
 Return at most {self.max_findings} important findings as ONLY valid JSON, without
 markdown fences or surrounding prose, in exactly this shape:
 {{"findings":[{{"file":"path/to/file","line":1,"category":"Bug",
@@ -373,8 +377,11 @@ source line numbers. Keep each finding concise.
             file_header = f"File: {path}\n"
             file_used = len(file_header) + (2 if entries else 0)
             file_changed_lines: list[int] = []
+            selected_line_entries: list[tuple[int, str]] = []
             for line_num in ordered_lines:
-                content = line_map[line_num]
+                content = str(line_map[line_num]).rstrip("\r\n")
+                if len(content) > 300:
+                    content = content[:297] + "..."
                 label = "Changed" if line_num in changed else "Context (not eligible)"
                 entry = f"{label} line {line_num}: {content}"
                 cost = len(entry) + 1
@@ -383,11 +390,13 @@ source line numbers. Keep each finding concise.
                     or file_used + cost > file_budget
                 ):
                     continue
-                file_entries.append(entry)
+                selected_line_entries.append((line_num, entry))
                 file_used += cost
                 if line_num in changed:
                     file_changed_lines.append(line_num)
             if file_changed_lines:
+                selected_line_entries.sort(key=lambda pair: pair[0])
+                file_entries = [entry for _, entry in selected_line_entries]
                 entries.append(file_header + "\n".join(file_entries))
                 used += file_used
                 included_paths.append(path)
@@ -397,3 +406,4 @@ source line numbers. Keep each finding concise.
                 limitations.append(f"{path}: changed lines did not fit in the code budget.")
 
         return "\n\n".join(entries), included_paths, included_changed_lines, eligible_lines
+

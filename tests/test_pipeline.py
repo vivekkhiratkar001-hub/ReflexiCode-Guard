@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 from src.github import review_pr
@@ -67,6 +68,28 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result.status, ReviewStatus.PARTIAL)
         self.assertEqual(len(result.findings), 1)
         self.assertIn("Ollama is unavailable", result.summary)
+
+    def test_partial_line_coverage_is_reported_as_partial_not_failure(self) -> None:
+        class PartiallyCoveringReviewer:
+            pipeline = SimpleNamespace(last_failed_batch_count=0)
+            review_failures = ("Some changed lines were omitted.",)
+            reviewed_files = ()
+            partially_reviewed_files = ("app.py",)
+            unreviewed_files = ()
+
+            def review(self, context, findings, repository_rules=""):
+                return findings
+
+        result = review_pr(
+            sample_context(),
+            reviewer=PartiallyCoveringReviewer(),
+            initial_findings=[],
+            repository_rules="",
+        )
+
+        self.assertEqual(result.status, ReviewStatus.PARTIAL)
+        self.assertIn("Semantic review was partial", result.summary)
+        self.assertNotIn("Semantic review failed", result.summary)
 
     def test_ollama_findings_use_the_shared_contract(self) -> None:
         findings = OllamaReviewer._parse_findings(

@@ -232,7 +232,7 @@ def test_cli_exits_nonzero_for_failed_semantic_review(monkeypatch, capsys) -> No
     assert all(call.args[0] != "POST" for call in session.request.call_args_list)
 
 
-def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None:
+def test_orchestrator_reports_batched_semantic_coverage() -> None:
     files = [
         {
             "filename": f"src/module_{index:02}.py",
@@ -250,16 +250,187 @@ def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None
 
     summary = ReviewOrchestrator(client, pipeline, dry_run=True).run("acme", "demo", 7)
 
-    assert summary.semantic_status == "partial"
-    assert any("Semantic review scope omitted changed files" in error for error in summary.errors)
-    assert any("Semantic review was partial" in error for error in summary.errors)
-    assert not any("Semantic review failed" in error for error in summary.errors)
-    assert summary.semantic_batches_total == 1
+    assert summary.semantic_status == "success_no_findings"
+    assert summary.errors == []
+    assert summary.semantic_batches_total == 4
     assert summary.semantic_batches_failed == 0
-    assert len(summary.reviewed_files) == 5
-    assert len(summary.unreviewed_files) == 15
-    assert len(pipeline.provider.inputs) == 1
+    assert len(summary.reviewed_files) == 20
+    assert summary.partially_reviewed_files == []
+    assert summary.unreviewed_files == []
+    assert len(pipeline.provider.inputs) == 4
     assert all(isinstance(prompt, str) and len(prompt) <= 10000 for prompt in pipeline.provider.inputs)
+
+
+def test_failed_batches_and_omissions_keep_semantic_and_static_findings() -> None:
+    from src.shared.models import AnalysisFinding
+
+    files = [
+        {
+            "filename": f"src/module_{index:02}.py",
+            "status": "added",
+            "patch": f"@@ -0,0 +1,1 @@\n+return {index}\n",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+        }
+        for index in range(28)
+    ]
+    session = _session(files=files)
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    semantic_response = json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/module_00.py",
+                    "line": 1,
+                    "category": "Bug",
+                    "severity": "High",
+                    "message": "The function returns the wrong value.",
+                    "evidence": "return 0",
+                    "suggestion": "Return the expected value.",
+                }
+            ]
+        }
+    )
+
+    class IntermittentProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def review(self, _prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return semantic_response
+            if self.calls == 2:
+                raise RuntimeError("simulated batch timeout")
+            return '{"findings":[]}'
+
+    class StaticProvider:
+        def get_findings(self, _pr, _files, _changed_code):
+            return [
+                AnalysisFinding(
+                    file_path="src/module_01.py",
+                    line_number=1,
+                    category="Security",
+                    severity="high",
+                    message="Static finding remains available.",
+                    evidence="return 1",
+                    suggestion="Review the value.",
+                )
+            ]
+
+    pipeline = ReviewPipeline(IntermittentProvider())
+    summary = ReviewOrchestrator(
+        client,
+        pipeline,
+        analysis_provider=StaticProvider(),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.semantic_status == "partial_failure"
+    assert summary.semantic_batches_total == 5
+    assert summary.semantic_batches_failed == 1
+    assert summary.semantic_findings == 1
+    assert summary.static_findings == 1
+    assert summary.total_findings == 2
+    assert "src/module_00.py" in summary.reviewed_files
+    assert set(summary.unreviewed_files) == {
+        *(f"src/module_{index:02}.py" for index in range(5, 10)),
+        *(f"src/module_{index:02}.py" for index in range(25, 28)),
+    }
+    assert summary.partially_reviewed_files == []
+    report = summary.to_markdown()
+    assert "Semantic status: partial_failure" in report
+    assert "Failed batches: 1" in report
+    assert "src/module_05.py" in report
+    assert "src/module_27.py" in report
+    assert summary.findings_by_severity == {"High": 2}
+
+
+def test_failed_batches_and_omissions_keep_semantic_and_static_findings() -> None:
+    from src.shared.models import AnalysisFinding
+
+    files = [
+        {
+            "filename": f"src/module_{index:02}.py",
+            "status": "added",
+            "patch": f"@@ -0,0 +1,1 @@\n+return {index}\n",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+        }
+        for index in range(28)
+    ]
+    session = _session(files=files)
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    semantic_response = json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/module_00.py",
+                    "line": 1,
+                    "category": "Bug",
+                    "severity": "High",
+                    "message": "The function returns the wrong value.",
+                    "evidence": "return 0",
+                    "suggestion": "Return the expected value.",
+                }
+            ]
+        }
+    )
+
+    class IntermittentProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def review(self, _prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return semantic_response
+            if self.calls == 2:
+                raise RuntimeError("simulated batch timeout")
+            return '{"findings":[]}'
+
+    class StaticProvider:
+        def get_findings(self, _pr, _files, _changed_code):
+            return [
+                AnalysisFinding(
+                    file_path="src/module_01.py",
+                    line_number=1,
+                    category="Security",
+                    severity="high",
+                    message="Static finding remains available.",
+                    evidence="return 1",
+                    suggestion="Review the value.",
+                )
+            ]
+
+    pipeline = ReviewPipeline(IntermittentProvider())
+    summary = ReviewOrchestrator(
+        client,
+        pipeline,
+        analysis_provider=StaticProvider(),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.semantic_status == "partial_failure"
+    assert summary.semantic_batches_total == 5
+    assert summary.semantic_batches_failed == 1
+    assert summary.semantic_findings == 1
+    assert summary.static_findings == 1
+    assert summary.total_findings == 2
+    assert "src/module_00.py" in summary.reviewed_files
+    assert set(summary.unreviewed_files) == {
+        *(f"src/module_{index:02}.py" for index in range(5, 10)),
+        *(f"src/module_{index:02}.py" for index in range(25, 28)),
+    }
+    assert summary.partially_reviewed_files == []
+    report = summary.to_markdown()
+    assert "Semantic status: partial_failure" in report
+    assert "Failed batches: 1" in report
+    assert "src/module_05.py" in report
+    assert "src/module_27.py" in report
+    assert summary.findings_by_severity == {"High": 2}
 
 
 def test_orchestrator_publishes_shared_static_findings_and_deduplicates_llm() -> None:
