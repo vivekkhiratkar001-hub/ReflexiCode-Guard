@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from src.shared.models import AnalysisFinding
+
 
 CommentSide = Literal["LEFT", "RIGHT"]
 FileStatus = Literal[
@@ -132,11 +134,23 @@ class ReviewSummary:
     head_sha: str
     total_findings: int = 0
     findings_by_severity: dict[str, int] = field(default_factory=dict)
+    findings: list[AnalysisFinding] = field(default_factory=list)
     comments_intended: int = 0
     comments_published: int = 0
     comments_skipped_duplicate: int = 0
     unmapped_findings: list[str] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
+    reviewed_files: list[str] = field(default_factory=list)
+    partially_reviewed_files: list[str] = field(default_factory=list)
+    unreviewed_files: list[str] = field(default_factory=list)
+    semantic_batches_total: int = 0
+    semantic_batches_failed: int = 0
+    semantic_status: str = "not_run"
+    semantic_findings: int = 0
+    static_findings: int = 0
+    semantic_elapsed_seconds: float = 0.0
+    semantic_budget_seconds: float = 240.0
+    block_merge: bool = False
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     intended_comments: list[InlineComment] = field(default_factory=list)
@@ -158,6 +172,12 @@ class ReviewSummary:
         )
         unmapped = "\n".join(f"- {item}" for item in self.unmapped_findings) or "- none"
         skipped = "\n".join(f"- {item}" for item in self.skipped_files) or "- none"
+        reviewed = "\n".join(f"- {item}" for item in self.reviewed_files) or "- none"
+        partially_reviewed = (
+            "\n".join(f"- {item}" for item in self.partially_reviewed_files)
+            or "- none"
+        )
+        unreviewed = "\n".join(f"- {item}" for item in self.unreviewed_files) or "- none"
         errors = "\n".join(f"- {item}" for item in self.errors) or "- none"
         warnings = "\n".join(f"- {item}" for item in self.warnings) or "- none"
         return f"""## ReflexiCode-Guard review summary
@@ -166,6 +186,7 @@ class ReviewSummary:
 - Pull request: `{self.owner}/{self.repo}#{self.pr_number}`
 - Head SHA: `{self.head_sha}`
 - Total findings: {self.total_findings}
+- Block merge: {"yes" if self.block_merge else "no"}
 - {published_label}: {self.comments_intended if self.dry_run else self.comments_published}
 - Duplicates skipped: {self.comments_skipped_duplicate}
 - Unmapped findings: {len(self.unmapped_findings)}
@@ -178,6 +199,23 @@ class ReviewSummary:
 
 ### Files skipped (binary / missing patch / unsupported)
 {skipped}
+
+### Semantic review coverage
+- Semantic status: {self.semantic_status}
+- Semantic findings: {self.semantic_findings}
+- Deterministic findings: {self.static_findings}
+- Batches: {self.semantic_batches_total}
+- Failed batches: {self.semantic_batches_failed}
+- Elapsed: {self.semantic_elapsed_seconds:.2f}s of {self.semantic_budget_seconds:.0f}s
+
+#### Fully reviewed files
+{reviewed}
+
+#### Partially reviewed files
+{partially_reviewed}
+
+#### Not reviewed files
+{unreviewed}
 
 ### Warnings
 {warnings}

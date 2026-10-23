@@ -21,6 +21,8 @@ def run_static_ast_rules(
     tree: ast.AST,
     lines: Sequence[DiffLine],
     line_offset: int,
+    *,
+    report_print: bool = True,
 ) -> List[RuleFinding]:
     """Run AST-based deterministic static analysis rules."""
     findings: List[RuleFinding] = []
@@ -126,11 +128,23 @@ def run_static_ast_rules(
 
         # 4. DEF005: Singleton comparison & DEF007: Literal identity comparison
         if isinstance(node, ast.Compare):
+            left = node.left
             for op, comparator in zip(node.ops, node.comparators):
                 if isinstance(op, (ast.Eq, ast.NotEq)):
-                    val = get_constant_value(comparator)
-                    is_singleton = val is None or type(val) is bool
-                    if is_singleton and isinstance(comparator, ast.Constant):
+                    singleton = next(
+                        (
+                            operand
+                            for operand in (left, comparator)
+                            if isinstance(operand, ast.Constant)
+                            and (
+                                operand.value is None
+                                or type(operand.value) is bool
+                            )
+                        ),
+                        None,
+                    )
+                    if singleton is not None:
+                        val = singleton.value
                         comp_lineno = real_lineno(node.lineno)
                         if comp_lineno in added_numbers:
                             diff_line = _find_line(lines, comp_lineno)
@@ -147,8 +161,17 @@ def run_static_ast_rules(
                                 )
                             )
                 elif isinstance(op, (ast.Is, ast.IsNot)):
-                    val = get_constant_value(comparator)
-                    if isinstance(val, (str, int, float, bytes)):
+                    literal = next(
+                        (
+                            operand.value
+                            for operand in (left, comparator)
+                            if isinstance(operand, ast.Constant)
+                            and isinstance(operand.value, (str, int, float, bytes))
+                            and type(operand.value) is not bool
+                        ),
+                        None,
+                    )
+                    if literal is not None:
                         comp_lineno = real_lineno(node.lineno)
                         if comp_lineno in added_numbers:
                             diff_line = _find_line(lines, comp_lineno)
@@ -157,12 +180,13 @@ def run_static_ast_rules(
                                     rule_id="DEF007",
                                     category=FindingCategory.STATIC_ANALYSIS.value,
                                     severity=Severity.MEDIUM.value,
-                                    message=f"Using 'is' or 'is not' with a literal {type(val).__name__} is undefined.",
+                                    message=f"Using 'is' or 'is not' with a literal {type(literal).__name__} is undefined.",
                                     suggestion="Use '==' or '!=' equality operators when comparing literals.",
                                     line_number=comp_lineno,
                                     evidence=(diff_line.text if diff_line else "").strip(),
                                 )
                             )
+                left = comparator
 
         # 5. DEF006: Duplicate dictionary keys
         if isinstance(node, ast.Dict):
@@ -191,7 +215,7 @@ def run_static_ast_rules(
         # 6. DEF008: Call to print()
         if isinstance(node, ast.Call):
             call_name = get_call_name(node.func)
-            if call_name == "print":
+            if call_name == "print" and report_print:
                 call_lineno = real_lineno(node.lineno)
                 if call_lineno in added_numbers:
                     diff_line = _find_line(lines, call_lineno)

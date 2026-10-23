@@ -126,6 +126,11 @@ class SharedContractReviewer:
         self.changed_lines = changed_lines
         self.changed_line_content = changed_line_content
         self.context_builder = context_builder or ReviewContextBuilder()
+        self.context_limitations: tuple[str, ...] = ()
+        self.review_failures: tuple[str, ...] = ()
+        self.reviewed_files: tuple[str, ...] = ()
+        self.partially_reviewed_files: tuple[str, ...] = ()
+        self.unreviewed_files: tuple[str, ...] = ()
 
     def review(
         self,
@@ -167,24 +172,35 @@ class SharedContractReviewer:
             semantic_findings = self.pipeline.review(llm_context)
         except ReviewResponseError as error:
             raise RuntimeError(f"Member 3 rejected the model response: {error}") from error
-
-        static_evidence = {
-            (
-                finding.file_path.replace("\\", "/").casefold(),
-                finding.line_number,
-                "".join(finding.evidence.split()).casefold(),
+        finally:
+            self.context_limitations = self.pipeline.last_context_limitations
+            self.review_failures = self.pipeline.last_review_failures
+            self.reviewed_files = self.pipeline.last_reviewed_files
+            self.partially_reviewed_files = (
+                self.pipeline.last_partially_reviewed_files
             )
-            for finding in findings
-        }
+            self.unreviewed_files = self.pipeline.last_unreviewed_files
+
+        def _is_duplicate_of_static(semantic: ReviewFinding) -> bool:
+            sem_file = semantic.file.replace("\\", "/").casefold()
+            sem_line = semantic.line
+            sem_ev = "".join(semantic.evidence.split()).casefold()
+            for stat in findings:
+                if (
+                    stat.file_path.replace("\\", "/").casefold() == sem_file
+                    and stat.line_number == sem_line
+                ):
+                    stat_ev = "".join(stat.evidence.split()).casefold()
+                    if sem_ev == stat_ev:
+                        return True
+                    if stat_ev and sem_ev and (stat_ev in sem_ev or sem_ev in stat_ev):
+                        return True
+            return False
+
         unique_semantic = [
             finding
             for finding in semantic_findings
-            if (
-                finding.file.replace("\\", "/").casefold(),
-                finding.line,
-                "".join(finding.evidence.split()).casefold(),
-            )
-            not in static_evidence
+            if not _is_duplicate_of_static(finding)
         ]
         return findings + [
             AnalysisFinding(

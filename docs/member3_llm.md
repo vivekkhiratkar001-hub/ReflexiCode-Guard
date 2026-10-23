@@ -88,19 +88,38 @@ The actual files under src/llm are:
 
 The active project implementation uses a local Ollama model:
 
-- model: qwen2.5-coder:7b
+- default model: qwen2.5-coder:7b (choose another installed model explicitly)
 - API endpoint: http://localhost:11434/api/generate
-- request format: JSON with model, prompt, stream, and format fields
-- timeout: configured in OllamaProvider
+- request format: JSON with model, prompt, stream, JSON format, and bounded generation options
+- timeout: 120 seconds by default; configurable from 1 to 300 seconds
+- generation: num_predict=512 and num_ctx=4096 by default
 
 The provider follows the pattern:
 
-1. Build the review prompt.
-2. Send it to the local Ollama endpoint.
+1. Split the prioritized changed-file set into prompts within configured character and file limits.
+2. Send no more than five prompts to the configured local Ollama endpoint; no automatic model fallback or retry is performed.
 3. Validate the HTTP response.
 4. Read the result JSON.
-5. Extract the response text.
-6. Return raw JSON text for downstream parsing.
+5. Extract only a completed response (incomplete streams and token-limit truncation fail).
+6. Return JSON text for downstream parsing.
+
+All prompt preparation, model execution, and parsing share a 240-second aggregate
+budget. Before each request, the pipeline checks remaining time and temporarily
+reduces a provider's request timeout, reserving five seconds for timeout and
+cleanup overhead; it restores the configured timeout afterward.
+The Ollama provider also checks elapsed time while consuming the stream and closes
+the response in all cases. Requests' socket read timeout is an inactivity timeout,
+not a hard cancellation primitive: a read already in progress can still outlast
+its configured timeout and the aggregate deadline.
+Closing the response releases client resources but does not guarantee immediate
+cancellation of model work on the Ollama server, and Python cannot safely cancel
+an arbitrary synchronous provider. The pipeline therefore stops scheduling
+additional requests as soon as the budget is exhausted and reports an incomplete
+result rather than claiming coverage.
+
+The provider logs model, prompt size, estimated input tokens, generation options,
+configured timeout, elapsed time, completion/timeout/invalid-output outcome, and
+Ollama timing metadata. It does not log the prompt, source text, or evidence.
 
 The code also includes MockProvider for tests and offline execution. This keeps the review pipeline valid without requiring a running Ollama server during normal unit tests.
 
@@ -138,6 +157,18 @@ The prompt builder creates a structured review prompt that tells the model to:
 - provide actionable suggestions
 - return only valid JSON
 
+Default bounds are 10,000 prompt characters, 4,000 changed-code characters,
+2,500 supporting-analysis characters, five files, and three findings. Changed
+lines are prioritized and include nearby patch context where it fits. Analysis
+evidence is deduplicated and its source excerpt is not repeated in the findings
+section. Omitted files/lines are not claimed as semantically reviewed.
+
+Coverage is reported separately for fully reviewed, partially reviewed, and
+unreviewed files. A file is only marked reviewed after its complete batch has
+returned valid JSON and passed context validation. Failed batches and files that
+do not fit within five requests remain unreviewed; partial semantic findings and
+deterministic findings from other batches are retained.
+
 The implementation is intentionally conservative. It does not ask the model to invent files, rules, or evidence.
 
 ## 7. ReviewFinding Schema
@@ -158,7 +189,9 @@ The JSON envelope is a top-level object with a findings list.
 
 ## 8. Validation and Quality Checks
 
-The parser performs deterministic validation to reduce unsupported or noisy output.
+The parser requires one complete JSON object, without markdown fences or
+surrounding text, and performs deterministic validation to reduce unsupported
+or noisy output.
 
 Implemented checks include:
 
@@ -169,9 +202,15 @@ Implemented checks include:
 - evidence validation against the supplied changed code
 - support for static-analysis evidence as a valid justification path
 - duplicate detection for obvious repeated issues
-- malformed or unsupported output rejection
+- exact repository path and eligible changed-line validation
+- supported finding-category and severity validation
+- minimum meaningful evidence checks against supplied changed source or included analysis
+- malformed, truncated, over-limit, or unsupported output rejection
 
-This does not guarantee that an LLM can never hallucinate, but malformed or unsupported findings cause the whole response to be rejected rather than partially filtering out the bad item. The current parser is intentionally all-or-nothing: a single invalid finding can fail the entire response.
+This does not guarantee that an LLM can never hallucinate. A malformed or
+unsupported finding rejects the response instead of being repaired or converted
+into a new finding. Model findings are limited by the configured prompt cap and
+validated output cap.
 
 ## 9. End-to-End Pipeline
 
@@ -180,12 +219,20 @@ The actual orchestration is in ReviewPipeline.
 The flow is:
 
 ReviewContext
-→ Prompt
+→ One bounded prioritized prompt
 → Provider
-→ JSON
-→ Parser
-→ Validation/Deduplication
-→ ReviewFinding[]
+→ Complete JSON
+→ Parser / selected-context validation
+→ Deduplicated ReviewFinding[]
+
+The CLI reports semantic status separately from aggregate finding count:
+`success_with_findings`, `success_no_findings`, `partial`, `failed`,
+`partial_failure`, and `not_run`. A failed semantic request never means a
+successful empty review. Deterministic findings are retained when semantic
+analysis fails; successful semantic output can still be partial when the prompt
+budget omits changed files. The human-readable summary and structured
+`ReviewSummary` include reviewed/unreviewed paths and separate static/semantic
+finding counts.
 
 This is the main high-level contract for the LLM review module.
 
@@ -217,7 +264,15 @@ Naming is intentionally not fully flattened across the project: `ReviewContext.a
 The repository’s actual project test commands are:
 
 - python -m pytest -q
+- python -m unittest discover -s tests
+- python -m compileall -q src tests scripts
 - python test_ollama.py
+
+The ordinary unit suites use mocked HTTP/model and GitHub responses and require
+no Ollama service or credentials. `test_ollama.py` is an explicit live local
+smoke test; its success does not establish that a remote GitHub PR review was
+verified. The review path is a prioritized subset, not a guarantee of complete
+semantic coverage, and local model latency depends on machine resources.
 
 The project test suite includes unit tests for:
 

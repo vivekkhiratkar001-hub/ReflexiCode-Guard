@@ -37,6 +37,20 @@ python -m unittest discover -s tests
 The suite includes offline mock-provider and mocked-GitHub tests; it does not
 require an Ollama service or GitHub credentials.
 
+## Streamlit review dashboard
+
+Launch the interactive dashboard after installing the project dependencies:
+
+```powershell
+streamlit run dashboard.py
+```
+
+Enter a pull request in the sidebar and use **Run Code Review**. Dry Run is
+enabled by default; disable it only when you intend to publish inline comments
+and the supplied GitHub token has write access. The dashboard retains the last
+result while changing filters or tabs and provides JSON and Markdown downloads.
+For offline UI testing, select **Use Mock LLM**.
+
 Run the local demo and analyzer evaluation with:
 
 ```powershell
@@ -52,6 +66,63 @@ repositories or explicitly publishing comments.
 ```powershell
 python -m src.github --owner OWNER --repo REPOSITORY --pr-number NUMBER --dry-run --use-mock-llm
 ```
+
+### Local Ollama semantic review
+
+Install and start Ollama, then install the model you intend to use (the default
+is `qwen2.5-coder:7b`):
+
+```powershell
+ollama pull qwen2.5-coder:7b
+ollama list
+```
+
+The GitHub CLI uses Ollama's local `/api/generate` endpoint with JSON output.
+Select an already-installed model with `--ollama-model` or
+`REFLEXICODE_OLLAMA_MODEL`; the application does not download or silently switch
+models. The default timeout is 120 seconds (configurable from 1 to 300), output
+is limited to 512 tokens, and Ollama `num_ctx` defaults to 4096. The default
+10,000-character prompt cap estimates to about 2,500 input tokens, leaving
+room for output and template overhead. Use
+`--ollama-timeout`, `--ollama-num-predict`, and `--ollama-num-ctx`, or
+`REFLEXICODE_OLLAMA_TIMEOUT`, `REFLEXICODE_OLLAMA_NUM_PREDICT`, and
+`REFLEXICODE_OLLAMA_NUM_CTX`.
+
+Semantic review uses no more than five bounded requests within a 240-second
+aggregate budget. Each request defaults to 10,000 prompt characters overall,
+4,000 characters of changed code with nearby hunk context, 2,500 characters of
+supporting analysis, at most five selected files, and at most three semantic
+findings. Character-to-token conversion is approximate (logged as an estimate);
+hardware, model loading, and generated output affect runtime. Configure prompt
+limits with `--review-prompt-chars`, `--review-code-chars`,
+`--review-analysis-chars`, `--review-max-files`, `--review-max-findings`, or
+their `REFLEXICODE_REVIEW_*` environment variables.
+Ollama semantic requests use temperature 0 and explicitly require each finding's
+evidence to be copied verbatim from its cited changed line. The parser still
+rejects evidence or line references that do not match the diff.
+
+The CLI reports semantic status separately from total findings:
+`success_with_findings`, `success_no_findings`, `partial`, `failed`,
+`partial_failure`, or `not_run`. Partial scope lists omitted files; successful
+empty output is distinct from failed or invalid model output. Deterministic
+static/security findings are produced locally and retained on semantic failure;
+coverage distinguishes fully reviewed, partially reviewed, and unreviewed files.
+The Requests socket timeout is an inactivity timeout rather than hard
+cancellation, so a blocking read can still outlast its timeout and the aggregate
+deadline. The pipeline reserves five seconds per bounded request, checks elapsed
+time around preparation, execution, and parsing, and does not start another
+request without that reserve.
+LLM findings are separately validated against selected files, changed lines,
+supported categories/severities, and source evidence. Neither approach proves
+that every defect was found. Logs contain request metadata and timings, not
+prompts or source text. Dry runs do not publish comments.
+
+The offline unit tests do not need Ollama or GitHub credentials. For an
+explicit live local-model smoke test, run `python test_ollama.py`; this exercises
+the semantic provider, parser, and pipeline but does not prove that a GitHub PR
+integration will complete. A real PR dry run also requires network access to
+GitHub (and a token for private repositories). Do not describe live integration
+as verified unless that run completed successfully.
 
 Publishing requires a token with pull-request write permission and an explicit
 `--publish` flag:

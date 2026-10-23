@@ -1,5 +1,4 @@
-"""Deterministic, changed-line-focused Python static and security analysis."""
-
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -17,10 +16,24 @@ from src.analysis.rules.complexity_rules import (
 from src.analysis.rules.lexical_rules import run_lexical_rules
 from src.analysis.normalizer import deduplicate_and_sort_findings
 
+logger = logging.getLogger(__name__)
+
 
 def _is_python(path: str) -> bool:
     """Determine if a file path points to a Python file."""
     return path.lower().endswith(".py")
+
+
+def _report_print_findings(path: str) -> bool:
+    """Keep print diagnostics focused on application code, not output surfaces."""
+    normalized = path.replace("\\", "/").casefold()
+    parts = normalized.split("/")
+    return not (
+        parts[0] in {"tests", "scripts"}
+        or parts[-1].startswith("test_")
+        or parts[-1] == "test_ollama.py"
+        or normalized == "src/github/cli.py"
+    )
 
 
 def analyze_diff(
@@ -48,30 +61,63 @@ def analyze_diff(
             if not hunk.lines:
                 continue
 
-            # Extract line texts for AST fragment parsing
-            lines_text = [l.text for l in hunk.lines]
+            target_lines = [l for l in hunk.lines if not l.is_deleted]
+            if not target_lines:
+                continue
+
+            # Extract line texts for AST fragment parsing from the new state of the code
+            lines_text = [l.text for l in target_lines]
             tree, line_offset, _ = parse_source_or_fragment(lines_text)
 
             hunk_rules: List[RuleFinding] = []
             if tree is not None:
-                hunk_rules.extend(run_static_ast_rules(tree, hunk.lines, line_offset))
-                hunk_rules.extend(run_security_ast_rules(tree, hunk.lines, line_offset))
-                hunk_rules.extend(
-                    run_complexity_ast_rules(tree, hunk.lines, line_offset, complexity_config)
-                )
+                try:
+                    hunk_rules.extend(
+                        run_static_ast_rules(
+                            tree,
+                            target_lines,
+                            line_offset,
+                            report_print=_report_print_findings(target_path),
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Static AST rules failed for %s: %s", target_path, exc)
+
+                try:
+                    hunk_rules.extend(run_security_ast_rules(tree, target_lines, line_offset))
+                except Exception as exc:
+                    logger.warning("Security AST rules failed for %s: %s", target_path, exc)
+
+                try:
+                    hunk_rules.extend(
+                        run_complexity_ast_rules(tree, target_lines, line_offset, complexity_config)
+                    )
+                except Exception as exc:
+                    logger.warning("Complexity AST rules failed for %s: %s", target_path, exc)
 
             # If AST rules produced no findings (e.g. fragment or malformed code), use lexical fallback
             if not hunk_rules:
-                hunk_rules.extend(run_lexical_rules(hunk.lines))
-            else:
+                try:
+                    hunk_rules.extend(
+                        run_lexical_rules(
+                            target_lines,
+                            report_print=_report_print_findings(target_path),
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Lexical rules failed for %s: %s", target_path, exc)
+            elif tree is not None:
                 # Also ensure pattern-based secret checks ran for added lines in the hunk
-                secret_findings = [
-                    f for f in run_security_ast_rules(tree, hunk.lines, line_offset)
-                    if f.rule_id == "SEC005"
-                ]
-                for sf in secret_findings:
-                    if sf not in hunk_rules:
-                        hunk_rules.append(sf)
+                try:
+                    secret_findings = [
+                        f for f in run_security_ast_rules(tree, target_lines, line_offset)
+                        if f.rule_id == "SEC005"
+                    ]
+                    for sf in secret_findings:
+                        if sf not in hunk_rules:
+                            hunk_rules.append(sf)
+                except Exception as exc:
+                    logger.warning("Secret checks failed for %s: %s", target_path, exc)
 
             file_raw_findings.extend(hunk_rules)
 

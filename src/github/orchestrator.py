@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from src.analysis.rules.security_rules import redact_secret_text
 from src.llm.context import ReviewContextBuilder
 from src.llm.pipeline import ReviewPipeline
 from src.llm.schemas import ReviewFinding
@@ -100,21 +101,65 @@ class ReviewOrchestrator:
             )
 
         shared_context = build_shared_pr_context(pr, files)
+        reviewer = SharedContractReviewer(
+            self.pipeline,
+            changed_code,
+            changed_lines,
+            build_changed_line_content(files, patches),
+            self.context_builder,
+        )
         review_result = run_shared_review(
             shared_context,
             repository_root=self.repository_root,
-            reviewer=SharedContractReviewer(
-                self.pipeline,
-                changed_code,
-                changed_lines,
-                build_changed_line_content(files, patches),
-                self.context_builder,
-            ),
+            reviewer=reviewer,
             repository_rules=json.dumps(rules, ensure_ascii=False),
             initial_findings=analysis,
         )
+        if reviewer.context_limitations:
+            summary.warnings.append(
+                "Semantic review context was prioritized and bounded: "
+                + " ".join(reviewer.context_limitations)
+            )
+        summary.reviewed_files = list(reviewer.reviewed_files)
+        summary.partially_reviewed_files = list(
+            reviewer.partially_reviewed_files
+        )
+        summary.unreviewed_files = list(reviewer.unreviewed_files)
+        summary.semantic_batches_total = self.pipeline.last_batch_count
+        summary.semantic_batches_failed = self.pipeline.last_failed_batch_count
+        summary.semantic_findings = self.pipeline.last_findings_count
+        summary.static_findings = len(analysis)
+        summary.semantic_elapsed_seconds = self.pipeline.last_elapsed_seconds
+        summary.semantic_budget_seconds = self.pipeline.review_budget_seconds
+        if review_result.status is ReviewStatus.PARTIAL:
+            if self.pipeline.last_failed_batch_count:
+                summary.semantic_status = (
+                    "partial_failure" if analysis else "failed"
+                )
+            else:
+                summary.semantic_status = "partial"
+        elif summary.semantic_findings:
+            summary.semantic_status = "success_with_findings"
+        else:
+            summary.semantic_status = "success_no_findings"
+        if self.pipeline.last_batch_count > 1:
+            summary.warnings.append(
+                f"Semantic review was split into {self.pipeline.last_batch_count} bounded batches."
+            )
         if review_result.status is ReviewStatus.PARTIAL:
             summary.errors.append(review_result.summary)
+        summary.findings = [
+            AnalysisFinding(
+                file_path=finding.file_path,
+                line_number=finding.line_number,
+                category=finding.category,
+                severity=finding.severity,
+                message=redact_secret_text(finding.message),
+                evidence=redact_secret_text(finding.evidence),
+                suggestion=redact_secret_text(finding.suggestion),
+            )
+            for finding in review_result.findings
+        ]
         findings = self._to_publishable_findings(review_result.findings, summary)
 
         return self._complete(pr, files, patches, findings, summary)
@@ -167,9 +212,13 @@ class ReviewOrchestrator:
                             "line": finding.line_number,
                             "category": category,
                             "severity": severity,
-                            "message": finding.message,
-                            "evidence": finding.evidence,
-                            "suggestion": finding.suggestion or None,
+                            "message": redact_secret_text(finding.message),
+                            "evidence": redact_secret_text(finding.evidence),
+                            "suggestion": (
+                                redact_secret_text(finding.suggestion)
+                                if finding.suggestion
+                                else None
+                            ),
                         }
                     )
                 )
@@ -190,6 +239,9 @@ class ReviewOrchestrator:
     ) -> ReviewSummary:
         summary.total_findings = len(findings)
         summary.findings_by_severity = dict(Counter(item.severity for item in findings))
+        summary.block_merge = any(
+            item.severity.casefold() in {"high", "critical"} for item in findings
+        )
 
         comments, unmapped = FindingCommentMapper(files, patches).map_findings(findings)
         summary.unmapped_findings.extend(unmapped)

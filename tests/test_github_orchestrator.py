@@ -6,11 +6,12 @@ import json
 from unittest.mock import Mock
 
 from src.github.client import GitHubClient
-from src.github.cli import main
+from src.github.cli import build_pipeline, main
 from src.github.comments import ReviewPublisher
 from src.github.models import FileChange, InlineComment, PullRequestInfo, ReviewSummary
 from src.github.orchestrator import ReviewOrchestrator
 from src.llm import MockProvider, ReviewPipeline
+from src.llm.ollama_provider import OllamaProvider
 from tests.test_github import ADDED_PATCH, FakeResponse, MODIFIED_PATCH
 
 
@@ -94,9 +95,342 @@ def test_orchestrator_runs_member3_pipeline_in_dry_run() -> None:
     assert summary.comments_published == 0
     assert summary.unmapped_findings == []
     assert summary.head_sha == "deadbeef"
+    assert summary.semantic_batches_total == 1
+    assert summary.semantic_batches_failed == 0
+    assert summary.semantic_status == "success_with_findings"
+    assert summary.semantic_findings == 1
+    assert summary.static_findings == 0
+    assert summary.reviewed_files == ["src/math.py"]
+    assert summary.unreviewed_files == []
     assert "**[High] Bug**" in summary.intended_comments[0].body
     assert "DRY RUN" in summary.to_markdown()
     assert "Comments that would be published: 1" in summary.to_markdown()
+
+
+def test_successful_empty_semantic_response_has_distinct_status() -> None:
+    client = GitHubClient(token="t", session=_session(), sleeper=lambda _: None)
+    summary = ReviewOrchestrator(
+        client,
+        ReviewPipeline(MockProvider('{"findings": []}')),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.semantic_status == "success_no_findings"
+    assert summary.semantic_batches_failed == 0
+    assert summary.semantic_findings == 0
+    assert summary.total_findings == 0
+    assert summary.errors == []
+
+
+def test_cli_pipeline_wires_configured_ollama_and_review_budgets() -> None:
+    from src.github.config import build_config
+
+    config = build_config(
+        owner="acme",
+        repo="demo",
+        pr_number=7,
+        ollama_model="qwen2.5-coder:7b",
+        ollama_timeout=42,
+        ollama_num_predict=512,
+        ollama_num_ctx=4096,
+        review_prompt_chars=9000,
+        review_code_chars=3500,
+        review_analysis_chars=2000,
+        review_max_files=4,
+        review_max_findings=2,
+    )
+
+    pipeline = build_pipeline(config)
+
+    assert isinstance(pipeline.provider, OllamaProvider)
+    assert pipeline.provider.timeout == 42
+    assert pipeline.provider.model == "qwen2.5-coder:7b"
+    assert pipeline.provider.num_predict == 512
+    assert pipeline.provider.num_ctx == 4096
+    assert pipeline.prompt_builder.max_prompt_chars == 9000
+    assert pipeline.prompt_builder.code_chars == 3500
+    assert pipeline.prompt_builder.analysis_chars == 2000
+    assert pipeline.prompt_builder.max_files == 4
+    assert pipeline.prompt_builder.max_findings == 2
+
+
+def test_orchestrator_preserves_static_findings_and_reports_semantic_timeout() -> None:
+    session = _session(
+        files=[
+            {
+                "filename": "src/risky.py",
+                "status": "added",
+                "patch": "@@ -0,0 +1,1 @@\n+value = eval(user_input)\n",
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+            }
+        ]
+    )
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+
+    class TimedOutProvider(MockProvider):
+        def review(self, context):
+            raise RuntimeError("The Ollama request timed out after 180 seconds.")
+
+    summary = ReviewOrchestrator(
+        client,
+        ReviewPipeline(TimedOutProvider("{}")),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.total_findings == 1
+    assert summary.semantic_status == "partial_failure"
+    assert summary.static_findings == 1
+    assert summary.semantic_findings == 0
+    assert summary.findings_by_severity == {"High": 1}
+    assert any("Semantic review failed" in error for error in summary.errors)
+    assert any("timed out after 180 seconds" in error for error in summary.errors)
+    assert summary.semantic_batches_failed == 1
+    assert summary.unreviewed_files == ["src/risky.py"]
+    assert "Not reviewed files\n- src/risky.py" in summary.to_markdown()
+    assert summary.intended_comments[0].path == "src/risky.py"
+    assert summary.intended_comments[0].line == 1
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
+
+
+def test_cli_exits_nonzero_for_failed_semantic_review(monkeypatch, capsys) -> None:
+    from src.github import cli as github_cli
+
+    session = _session()
+    monkeypatch.setattr(
+        github_cli,
+        "GitHubClient",
+        lambda *, token, api_url: GitHubClient(
+            token=token,
+            api_url=api_url,
+            session=session,
+            sleeper=lambda _: None,
+        ),
+    )
+
+    class FailingProvider:
+        def review(self, _prompt):
+            raise RuntimeError("simulated Ollama timeout")
+
+    monkeypatch.setattr(
+        github_cli,
+        "build_pipeline",
+        lambda _config: ReviewPipeline(FailingProvider()),
+    )
+
+    exit_code = github_cli.main(
+        ["--owner", "acme", "--repo", "demo", "--pr-number", "7", "--dry-run"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "Semantic review failed" in output
+    assert "Failed batches: 1" in output
+    assert "Semantic status: failed" in output
+    assert "Not reviewed files\n- src/math.py" in output
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
+
+
+def test_orchestrator_reports_batched_semantic_coverage() -> None:
+    files = [
+        {
+            "filename": f"src/module_{index:02}.py",
+            "status": "added",
+            "patch": "@@ -0,0 +1,1 @@\n+def clean():\n",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+        }
+        for index in range(20)
+    ]
+    session = _session(files=files)
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    pipeline = ReviewPipeline(MockProvider('{"findings": []}'))
+
+    summary = ReviewOrchestrator(client, pipeline, dry_run=True).run("acme", "demo", 7)
+
+    assert summary.semantic_status == "success_no_findings"
+    assert summary.errors == []
+    assert summary.semantic_batches_total == 4
+    assert summary.semantic_batches_failed == 0
+    assert len(summary.reviewed_files) == 20
+    assert summary.partially_reviewed_files == []
+    assert summary.unreviewed_files == []
+    assert len(pipeline.provider.inputs) == 4
+    assert all(isinstance(prompt, str) and len(prompt) <= 10000 for prompt in pipeline.provider.inputs)
+
+
+def test_failed_batches_and_omissions_keep_semantic_and_static_findings() -> None:
+    from src.shared.models import AnalysisFinding
+
+    files = [
+        {
+            "filename": f"src/module_{index:02}.py",
+            "status": "added",
+            "patch": f"@@ -0,0 +1,1 @@\n+return {index}\n",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+        }
+        for index in range(28)
+    ]
+    session = _session(files=files)
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    semantic_response = json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/module_00.py",
+                    "line": 1,
+                    "category": "Bug",
+                    "severity": "High",
+                    "message": "The function returns the wrong value.",
+                    "evidence": "return 0",
+                    "suggestion": "Return the expected value.",
+                }
+            ]
+        }
+    )
+
+    class IntermittentProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def review(self, _prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return semantic_response
+            if self.calls == 2:
+                raise RuntimeError("simulated batch timeout")
+            return '{"findings":[]}'
+
+    class StaticProvider:
+        def get_findings(self, _pr, _files, _changed_code):
+            return [
+                AnalysisFinding(
+                    file_path="src/module_01.py",
+                    line_number=1,
+                    category="Security",
+                    severity="high",
+                    message="Static finding remains available.",
+                    evidence="return 1",
+                    suggestion="Review the value.",
+                )
+            ]
+
+    pipeline = ReviewPipeline(IntermittentProvider())
+    summary = ReviewOrchestrator(
+        client,
+        pipeline,
+        analysis_provider=StaticProvider(),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.semantic_status == "partial_failure"
+    assert summary.semantic_batches_total == 5
+    assert summary.semantic_batches_failed == 1
+    assert summary.semantic_findings == 1
+    assert summary.static_findings == 1
+    assert summary.total_findings == 2
+    assert "src/module_00.py" in summary.reviewed_files
+    assert set(summary.unreviewed_files) == {
+        *(f"src/module_{index:02}.py" for index in range(5, 10)),
+        *(f"src/module_{index:02}.py" for index in range(25, 28)),
+    }
+    assert summary.partially_reviewed_files == []
+    report = summary.to_markdown()
+    assert "Semantic status: partial_failure" in report
+    assert "Failed batches: 1" in report
+    assert "src/module_05.py" in report
+    assert "src/module_27.py" in report
+    assert summary.findings_by_severity == {"High": 2}
+
+
+def test_failed_batches_and_omissions_keep_semantic_and_static_findings() -> None:
+    from src.shared.models import AnalysisFinding
+
+    files = [
+        {
+            "filename": f"src/module_{index:02}.py",
+            "status": "added",
+            "patch": f"@@ -0,0 +1,1 @@\n+return {index}\n",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+        }
+        for index in range(28)
+    ]
+    session = _session(files=files)
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    semantic_response = json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/module_00.py",
+                    "line": 1,
+                    "category": "Bug",
+                    "severity": "High",
+                    "message": "The function returns the wrong value.",
+                    "evidence": "return 0",
+                    "suggestion": "Return the expected value.",
+                }
+            ]
+        }
+    )
+
+    class IntermittentProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def review(self, _prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return semantic_response
+            if self.calls == 2:
+                raise RuntimeError("simulated batch timeout")
+            return '{"findings":[]}'
+
+    class StaticProvider:
+        def get_findings(self, _pr, _files, _changed_code):
+            return [
+                AnalysisFinding(
+                    file_path="src/module_01.py",
+                    line_number=1,
+                    category="Security",
+                    severity="high",
+                    message="Static finding remains available.",
+                    evidence="return 1",
+                    suggestion="Review the value.",
+                )
+            ]
+
+    pipeline = ReviewPipeline(IntermittentProvider())
+    summary = ReviewOrchestrator(
+        client,
+        pipeline,
+        analysis_provider=StaticProvider(),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.semantic_status == "partial_failure"
+    assert summary.semantic_batches_total == 5
+    assert summary.semantic_batches_failed == 1
+    assert summary.semantic_findings == 1
+    assert summary.static_findings == 1
+    assert summary.total_findings == 2
+    assert "src/module_00.py" in summary.reviewed_files
+    assert set(summary.unreviewed_files) == {
+        *(f"src/module_{index:02}.py" for index in range(5, 10)),
+        *(f"src/module_{index:02}.py" for index in range(25, 28)),
+    }
+    assert summary.partially_reviewed_files == []
+    report = summary.to_markdown()
+    assert "Semantic status: partial_failure" in report
+    assert "Failed batches: 1" in report
+    assert "src/module_05.py" in report
+    assert "src/module_27.py" in report
+    assert summary.findings_by_severity == {"High": 2}
 
 
 def test_orchestrator_publishes_shared_static_findings_and_deduplicates_llm() -> None:
@@ -315,6 +649,8 @@ def test_unmapped_findings_go_to_summary() -> None:
     assert summary.total_findings == 0
     assert summary.errors
     assert "Member 3 rejected" in summary.errors[0]
+    assert summary.semantic_batches_failed == 1
+    assert summary.unreviewed_files == ["src/math.py"]
 
 
 def test_summary_counts_unmapped_when_line_not_in_diff() -> None:
@@ -423,6 +759,49 @@ def test_empty_findings_summary() -> None:
     assert summary.comments_published == 0
     markdown = summary.to_markdown()
     assert "Total findings: 0" in markdown
+
+
+def test_comment_preview_redacts_credentials_from_all_finding_fields() -> None:
+    secret = "supersecretvalue"
+    patch = f"@@ -0,0 +1,1 @@\n+API_KEY = '{secret}'\n"
+    session = _session(
+        files=[
+            {
+                "filename": "src/config.py",
+                "status": "added",
+                "patch": patch,
+                "additions": 1,
+                "deletions": 0,
+                "changes": 1,
+            }
+        ]
+    )
+    response = json.dumps(
+        {
+            "findings": [
+                {
+                    "file": "src/config.py",
+                    "line": 1,
+                    "category": "Security",
+                    "severity": "High",
+                    "message": f"API_KEY = '{secret}' is committed in source.",
+                    "evidence": f"API_KEY = '{secret}'",
+                    "suggestion": f"Remove API_KEY = '{secret}' and load it from secure configuration.",
+                }
+            ]
+        }
+    )
+    client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
+    summary = ReviewOrchestrator(
+        client,
+        ReviewPipeline(MockProvider(response)),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    preview = "\n".join(comment.body for comment in summary.intended_comments)
+    assert secret not in preview
+    assert "[REDACTED]" in preview
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
 
 
 def test_modified_file_with_member3_context() -> None:
