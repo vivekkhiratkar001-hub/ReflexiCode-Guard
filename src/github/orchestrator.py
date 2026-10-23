@@ -148,6 +148,18 @@ class ReviewOrchestrator:
             )
         if review_result.status is ReviewStatus.PARTIAL:
             summary.errors.append(review_result.summary)
+        summary.findings = [
+            AnalysisFinding(
+                file_path=finding.file_path,
+                line_number=finding.line_number,
+                category=finding.category,
+                severity=finding.severity,
+                message=redact_secret_text(finding.message),
+                evidence=redact_secret_text(finding.evidence),
+                suggestion=redact_secret_text(finding.suggestion),
+            )
+            for finding in review_result.findings
+        ]
         findings = self._to_publishable_findings(review_result.findings, summary)
 
         return self._complete(pr, files, patches, findings, summary)

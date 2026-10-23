@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from src.shared.models import AnalysisFinding
+
 
 CommentSide = Literal["LEFT", "RIGHT"]
 FileStatus = Literal[
@@ -132,6 +134,7 @@ class ReviewSummary:
     head_sha: str
     total_findings: int = 0
     findings_by_severity: dict[str, int] = field(default_factory=dict)
+    findings: list[AnalysisFinding] = field(default_factory=list)
     comments_intended: int = 0
     comments_published: int = 0
     comments_skipped_duplicate: int = 0

@@ -37,6 +37,20 @@ python -m unittest discover -s tests
 The suite includes offline mock-provider and mocked-GitHub tests; it does not
 require an Ollama service or GitHub credentials.
 
+## Streamlit review dashboard
+
+Launch the interactive dashboard after installing the project dependencies:
+
+```powershell
+streamlit run dashboard.py
+```
+
+Enter a pull request in the sidebar and use **Run Code Review**. Dry Run is
+enabled by default; disable it only when you intend to publish inline comments
+and the supplied GitHub token has write access. The dashboard retains the last
+result while changing filters or tabs and provides JSON and Markdown downloads.
+For offline UI testing, select **Use Mock LLM**.
+
 Run the local demo and analyzer evaluation with:
 
 ```powershell
