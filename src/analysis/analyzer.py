@@ -60,8 +60,12 @@ def analyze_diff(
             if not hunk.lines:
                 continue
 
+            target_lines = [l for l in hunk.lines if not l.is_deleted]
+            if not target_lines:
+                continue
+
             # Extract line texts for AST fragment parsing
-            lines_text = [l.text for l in hunk.lines]
+            lines_text = [l.text for l in target_lines]
             tree, line_offset, _ = parse_source_or_fragment(lines_text)
 
             hunk_rules: List[RuleFinding] = []
@@ -69,28 +73,28 @@ def analyze_diff(
                 hunk_rules.extend(
                     run_static_ast_rules(
                         tree,
-                        hunk.lines,
+                        target_lines,
                         line_offset,
                         report_print=_report_print_findings(target_path),
                     )
                 )
-                hunk_rules.extend(run_security_ast_rules(tree, hunk.lines, line_offset))
+                hunk_rules.extend(run_security_ast_rules(tree, target_lines, line_offset))
                 hunk_rules.extend(
-                    run_complexity_ast_rules(tree, hunk.lines, line_offset, complexity_config)
+                    run_complexity_ast_rules(tree, target_lines, line_offset, complexity_config)
                 )
 
             # If AST rules produced no findings (e.g. fragment or malformed code), use lexical fallback
             if not hunk_rules:
                 hunk_rules.extend(
                     run_lexical_rules(
-                        hunk.lines,
+                        target_lines,
                         report_print=_report_print_findings(target_path),
                     )
                 )
             else:
                 # Also ensure pattern-based secret checks ran for added lines in the hunk
                 secret_findings = [
-                    f for f in run_security_ast_rules(tree, hunk.lines, line_offset)
+                    f for f in run_security_ast_rules(tree, target_lines, line_offset)
                     if f.rule_id == "SEC005"
                 ]
                 for sf in secret_findings:

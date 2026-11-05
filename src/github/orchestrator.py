@@ -17,6 +17,7 @@ from src.shared.enums import ReviewStatus
 from src.shared.models import AnalysisFinding, PRContext
 
 from .adapters import (
+    LocalOrRemoteRepositoryRulesProvider,
     LocalRepositoryRulesProvider,
     SharedContractReviewer,
     SharedStaticAnalysisProvider,
@@ -52,7 +53,9 @@ class ReviewOrchestrator:
     ) -> None:
         self.client = client
         self.pipeline = pipeline
-        self.rules_provider = rules_provider or LocalRepositoryRulesProvider(repository_root)
+        self.rules_provider = rules_provider or LocalOrRemoteRepositoryRulesProvider(
+            repository_root, client=client
+        )
         self.analysis_provider = analysis_provider or SharedStaticAnalysisProvider()
         self.publisher = publisher or ReviewPublisher(client)
         self.context_builder = context_builder
@@ -121,11 +124,50 @@ class ReviewOrchestrator:
                 + " ".join(reviewer.context_limitations)
             )
         summary.reviewed_files = list(reviewer.reviewed_files)
+        summary.partially_reviewed_files = list(reviewer.partially_reviewed_files)
         summary.unreviewed_files = list(reviewer.unreviewed_files)
         summary.semantic_batches_total = self.pipeline.last_batch_count
         summary.semantic_batches_failed = self.pipeline.last_failed_batch_count
+        summary.semantic_batches_succeeded = getattr(
+            self.pipeline,
+            "last_successful_batch_count",
+            max(0, self.pipeline.last_batch_count - self.pipeline.last_failed_batch_count),
+        )
+        summary.semantic_chunks_total = getattr(
+            self.pipeline, "last_total_chunks", self.pipeline.last_batch_count
+        )
+        summary.semantic_batches_skipped = getattr(
+            self.pipeline,
+            "last_skipped_batch_count",
+            max(0, summary.semantic_chunks_total - self.pipeline.last_batch_count),
+        )
+        summary.semantic_elapsed_seconds = self.pipeline.last_review_elapsed_seconds
+        summary.semantic_budget_seconds = self.pipeline.review_budget_seconds
         summary.semantic_findings = self.pipeline.last_findings_count
         summary.static_findings = len(analysis)
+
+        # Provider, model, and diagnostic tracking
+        provider_obj = getattr(self.pipeline, "provider", None)
+        provider_name = type(provider_obj).__name__.lower()
+        if "gemini" in provider_name:
+            summary.llm_provider = "gemini"
+        elif "ollama" in provider_name:
+            summary.llm_provider = "ollama"
+        elif "mock" in provider_name:
+            summary.llm_provider = "mock"
+        else:
+            summary.llm_provider = provider_name
+
+        summary.llm_model = getattr(provider_obj, "model", "")
+        summary.last_used_model = getattr(provider_obj, "last_used_model", summary.llm_model)
+        summary.fallback_model = getattr(provider_obj, "fallback_model", None)
+        summary.fallback_attempted = getattr(provider_obj, "fallback_attempted", False)
+        summary.fallback_succeeded = getattr(provider_obj, "fallback_succeeded", False)
+        summary.batches_retried = getattr(provider_obj, "retry_count", 0)
+        summary.budget_exhausted = getattr(self.pipeline, "last_budget_exhausted", False)
+        summary.root_failure_category = getattr(self.pipeline, "last_root_failure_category", None)
+        summary.root_failure_message = getattr(self.pipeline, "last_root_failure_message", None)
+
         if review_result.status is ReviewStatus.PARTIAL:
             if self.pipeline.last_failed_batch_count:
                 summary.semantic_status = (
@@ -137,9 +179,15 @@ class ReviewOrchestrator:
             summary.semantic_status = "success_with_findings"
         else:
             summary.semantic_status = "success_no_findings"
+
         if self.pipeline.last_batch_count > 1:
             summary.warnings.append(
                 f"Semantic review was split into {self.pipeline.last_batch_count} bounded batches."
+            )
+        if self.pipeline.last_unreviewed_files:
+            summary.warnings.append(
+                f"{len(self.pipeline.last_unreviewed_files)} changed files were outside the configured "
+                f"semantic-review scope ({self.pipeline.max_requests} requests limit) and were not reviewed."
             )
         if review_result.status is ReviewStatus.PARTIAL:
             summary.errors.append(review_result.summary)

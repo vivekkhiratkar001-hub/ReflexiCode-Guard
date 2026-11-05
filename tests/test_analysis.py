@@ -250,6 +250,61 @@ class PythonRuleTests(unittest.TestCase):
 
         self.assertEqual(analyze_pr(context(diff)), [])
 
+    def test_unreachable_code_not_flagged_in_except_handlers(self) -> None:
+        diff = single_file_diff(
+            "app.py",
+            "@@ -0,0 +1,6 @@\n"
+            "+try:\n"
+            "+    pass\n"
+            "+except FileNotFoundError:\n"
+            "+    raise RuntimeError('not found')\n"
+            "+except Exception:\n"
+            "+    raise RuntimeError('other')\n",
+        )
+        findings = analyze_pr(context(diff))
+        unreachable = [f for f in findings if "unreachable" in f.message.lower()]
+        self.assertEqual(unreachable, [])
+
+    def test_unreachable_code_not_flagged_for_nested_functions(self) -> None:
+        diff = single_file_diff(
+            "app.py",
+            "@@ -0,0 +1,7 @@\n"
+            "+def outer():\n"
+            "+    def inner():\n"
+            "+        return 1\n"
+            "+    x = inner()\n"
+            "+    return x\n",
+        )
+        findings = analyze_pr(context(diff))
+        unreachable = [f for f in findings if "unreachable" in f.message.lower()]
+        self.assertEqual(unreachable, [])
+
+    def test_unreachable_code_detected_after_unconditional_return(self) -> None:
+        diff = single_file_diff(
+            "app.py",
+            "@@ -0,0 +1,4 @@\n"
+            "+def compute():\n"
+            "+    return 1\n"
+            "+    dead_code = 2\n",
+        )
+        findings = analyze_pr(context(diff))
+        unreachable = [f for f in findings if "unreachable" in f.message.lower()]
+        self.assertEqual(len(unreachable), 1)
+        self.assertEqual(unreachable[0].line_number, 3)
+        self.assertIn("Unreachable code", unreachable[0].message)
+
+    def test_unreachable_code_not_flagged_for_replaced_return_statements(self) -> None:
+        diff = single_file_diff(
+            "src/auth.py",
+            "@@ -1,4 +1,4 @@\n"
+            " def verify_password(stored_password, supplied_password):\n"
+            "-    return supplied_password == stored_password\n"
+            "+    return supplied_password.startswith(stored_password)\n",
+        )
+        findings = analyze_pr(context(diff))
+        unreachable = [f for f in findings if "unreachable" in f.message.lower()]
+        self.assertEqual(unreachable, [])
+
 
 if __name__ == "__main__":
     unittest.main()

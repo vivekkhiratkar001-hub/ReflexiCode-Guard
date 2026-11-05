@@ -135,10 +135,12 @@ PR / Issue Intent
 - PR description: {description or 'not provided'}
 - Issue context: {issue_context or 'not provided'}
 
-Prioritized changed code (Changed Code; file paths and source line numbers are authoritative)
+Prioritized changed code and source lines (Changed Code; JSONL records are authoritative)
 {code}
-Lines labelled Context are included only to explain nearby code; findings must point
-to an explicitly labelled Changed line.
+Every record has an exact file path, line number, kind, and source string. Only
+records with kind="changed" are eligible finding locations. Copy the complete
+source string from that exact record into evidence; do not paraphrase it, quote a
+function description, infer a line, or cite a context record.
 
 Repository Rules
 {rules}
@@ -151,20 +153,23 @@ Changed-line information is authoritative for eligible finding locations.
 Focus on the changed code. Use PR/issue context to understand intent.
 Use repository rules as project-specific constraints.
 Use AST/static findings as supporting evidence. Do not duplicate them.
-Do not repeat a supplied deterministic finding. Do not invent files, lines, rules,
-or evidence. Report only concrete correctness or security defects supported by
-exact supplied evidence. Do not report style or speculative concerns.
+Do not repeat any supplied deterministic finding or report style/complexity-only
+maintainability opinions. Do not invent files, lines, rules, or evidence. Before
+emitting a finding, match its file and line to one kind="changed" record and copy
+that record's entire source value exactly into evidence. The evidence value must
+be the source code line itself, not a prose explanation of that line. If no
+concrete defect can be supported this way, omit the finding.
 Return at most {self.max_findings} important findings as ONLY valid JSON, without
 markdown fences or surrounding prose, in exactly this shape:
 {{"findings":[{{"file":"path/to/file","line":1,"category":"Bug",
 "severity":"High","message":"Concise actionable explanation",
-"evidence":"Exact supporting code from an eligible Changed line",
+"evidence":"Exact complete source string from that eligible record",
 "suggestion":"Practical correction or null"}}]}}
 
 Severity must be one of Low, Medium, High, or Critical. Category must be one of
-Bug, Correctness, Security, Performance, Maintainability, or Architecture. When no supported
-findings exist, return {{"findings":[]}}. Use exact supplied file paths and
-source line numbers. Keep each finding concise.
+Bug, Correctness, Security, Performance, Maintainability, or Architecture. When
+no supported findings exist, return {{"findings":[]}}. Use exact supplied file
+paths and source line numbers. Keep each finding concise.
 {limitation_text}"""
         if len(prompt) > self.max_prompt_chars:
             raise ValueError(
@@ -366,17 +371,25 @@ source line numbers. Keep each finding concise.
                 if finding.get("line") is not None
             }
             ordered_lines = sorted(
-                changed & context_lines,
-                key=lambda line: (line not in finding_lines, line),
-            ) + sorted(context_lines - changed)
+                context_lines,
+                key=lambda line: (
+                    line not in changed,
+                    line not in finding_lines,
+                    line,
+                ),
+            )
             file_entries: list[str] = []
-            file_header = f"File: {path}\n"
-            file_used = len(file_header) + (2 if entries else 0)
+            file_used = 0
             file_changed_lines: list[int] = []
             for line_num in ordered_lines:
                 content = line_map[line_num]
-                label = "Changed" if line_num in changed else "Context (not eligible)"
-                entry = f"{label} line {line_num}: {content}"
+                record = {
+                    "file": path,
+                    "line": line_num,
+                    "kind": "changed" if line_num in changed else "context",
+                    "source": content,
+                }
+                entry = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
                 cost = len(entry) + 1
                 if (
                     used + file_used + cost > self.code_chars
@@ -388,7 +401,7 @@ source line numbers. Keep each finding concise.
                 if line_num in changed:
                     file_changed_lines.append(line_num)
             if file_changed_lines:
-                entries.append(file_header + "\n".join(file_entries))
+                entries.extend(file_entries)
                 used += file_used
                 included_paths.append(path)
                 eligible_lines[path] = tuple(sorted(file_changed_lines))
@@ -396,4 +409,4 @@ source line numbers. Keep each finding concise.
             else:
                 limitations.append(f"{path}: changed lines did not fit in the code budget.")
 
-        return "\n\n".join(entries), included_paths, included_changed_lines, eligible_lines
+        return "\n".join(entries), included_paths, included_changed_lines, eligible_lines

@@ -105,7 +105,16 @@ def run_static_ast_rules(
                         )
 
         # 3. DEF004: Unreachable code
-        if hasattr(node, "body") and isinstance(node.body, list) and len(node.body) > 1:
+        if isinstance(node, (
+            ast.FunctionDef, ast.AsyncFunctionDef,
+            ast.For, ast.AsyncFor,
+            ast.While,
+            ast.With, ast.AsyncWith,
+            ast.If,
+            ast.Try,
+            ast.Module,
+            ast.ClassDef,
+        )) and isinstance(node.body, list) and len(node.body) > 1:
             terminator_seen = False
             for stmt in node.body:
                 if terminator_seen:

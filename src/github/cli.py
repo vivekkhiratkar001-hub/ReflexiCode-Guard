@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from src.llm.gemini_provider import GeminiProvider
 from src.llm.mock_provider import MockProvider
 from src.llm.ollama_provider import OllamaProvider
 from src.llm.pipeline import ReviewPipeline
@@ -36,17 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ollama-timeout",
         type=int,
-        help="Ollama request timeout in seconds (defaults to REFLEXICODE_OLLAMA_TIMEOUT or 180)",
+        help="Ollama per-request timeout in seconds (default REFLEXICODE_OLLAMA_TIMEOUT or 120)",
     )
     parser.add_argument(
         "--ollama-num-predict",
         type=int,
-        help="Maximum Ollama output tokens (defaults to REFLEXICODE_OLLAMA_NUM_PREDICT or 768)",
+        help="Maximum Ollama output tokens (default REFLEXICODE_OLLAMA_NUM_PREDICT or 512)",
     )
     parser.add_argument(
         "--ollama-num-ctx",
         type=int,
-        help="Ollama context tokens (defaults to REFLEXICODE_OLLAMA_NUM_CTX or 8192)",
+        help="Ollama context tokens (default REFLEXICODE_OLLAMA_NUM_CTX or 4096)",
     )
     parser.add_argument(
         "--review-prompt-chars",
@@ -66,12 +67,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--review-max-files",
         type=int,
-        help="Maximum changed files selected for semantic review (default 5)",
+        help="Maximum changed files per review batch (default 3)",
     )
     parser.add_argument(
         "--review-max-findings",
         type=int,
-        help="Maximum semantic findings requested from Ollama (default 3)",
+        help="Maximum semantic findings requested per batch (default 3)",
+    )
+    parser.add_argument(
+        "--review-max-requests",
+        type=int,
+        help="Maximum sequential LLM requests per PR review (default 5)",
+    )
+    parser.add_argument(
+        "--review-budget-seconds",
+        type=int,
+        help="Aggregate semantic-review scheduling budget in seconds (default 240)",
     )
     parser.add_argument("--event-path", help="Path to a GitHub Actions event JSON file")
     parser.add_argument(
@@ -98,6 +109,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--analysis-file",
         help="Optional JSON file of static-analysis findings (Member 2 stand-in)",
     )
+    parser.add_argument(
+        "--llm-provider",
+        choices=["ollama", "gemini"],
+        help="LLM backend to use for semantic review (default: ollama). "
+             "Can also be set via REFLEXICODE_LLM_PROVIDER environment variable.",
+    )
+    parser.add_argument(
+        "--gemini-model",
+        help="Gemini model name (default: gemini-2.0-flash). "
+             "Can also be set via REFLEXICODE_GEMINI_MODEL environment variable.",
+    )
+    parser.add_argument(
+        "--gemini-fallback-model",
+        help="Optional fallback Gemini model used if the primary model fails or experiences high demand. "
+             "Can also be set via REFLEXICODE_GEMINI_FALLBACK_MODEL environment variable.",
+    )
+    parser.add_argument(
+        "--gemini-max-retries",
+        type=int,
+        help="Maximum retries for transient Gemini errors (default: 3). "
+             "Can also be set via REFLEXICODE_GEMINI_MAX_RETRIES environment variable.",
+    )
     return parser
 
 
@@ -111,15 +144,28 @@ def build_pipeline(config: GitHubAppConfig) -> ReviewPipeline:
         max_files=config.review_max_files,
         max_findings=config.review_max_findings,
     )
-    return ReviewPipeline(
-        OllamaProvider(
+    if config.llm_provider == "gemini":
+        provider = GeminiProvider(
+            model=config.gemini_model,
+            timeout=config.ollama_timeout,  # reuse the shared timeout budget
+            prompt_builder=prompt_builder,
+            fallback_model=config.gemini_fallback_model,
+            max_retries=config.gemini_max_retries if config.gemini_max_retries is not None else 3,
+        )
+    else:
+        # Default: Ollama
+        provider = OllamaProvider(
             model=config.ollama_model,
             timeout=config.ollama_timeout,
             num_predict=config.ollama_num_predict,
             num_ctx=config.ollama_num_ctx,
             prompt_builder=prompt_builder,
-        ),
+        )
+    return ReviewPipeline(
+        provider,
         prompt_builder=prompt_builder,
+        max_requests=config.review_max_requests,
+        review_budget_seconds=config.review_budget_seconds,
     )
 
 
@@ -142,7 +188,7 @@ def run_from_config(config: GitHubAppConfig) -> int:
     orchestrator = ReviewOrchestrator(
         client,
         build_pipeline(config),
-        rules_provider=select_rules_provider(config.rules_file),
+        rules_provider=select_rules_provider(config.rules_file, client=client),
         analysis_provider=select_analysis_provider(config.analysis_file),
         dry_run=config.dry_run,
     )
@@ -188,8 +234,14 @@ def main(argv: list[str] | None = None) -> int:
             review_analysis_chars=args.review_analysis_chars,
             review_max_files=args.review_max_files,
             review_max_findings=args.review_max_findings,
+            review_max_requests=args.review_max_requests,
+            review_budget_seconds=args.review_budget_seconds,
             event_path=args.event_path,
             publish=bool(args.publish and not args.dry_run),
+            llm_provider=args.llm_provider,
+            gemini_model=args.gemini_model,
+            gemini_fallback_model=args.gemini_fallback_model,
+            gemini_max_retries=args.gemini_max_retries,
         )
         return run_from_config(config)
     except GitHubConfigError as exc:

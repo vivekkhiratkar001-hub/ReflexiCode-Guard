@@ -12,6 +12,7 @@ from src.llm.ollama_provider import OllamaProvider
 from src.llm.parser import ReviewResponseError, ReviewResponseParser
 from src.llm.pipeline import ReviewPipeline
 from src.llm.prompts import MAX_REVIEW_PROMPT_CHARS, ReviewPromptBuilder
+from src.llm.provider import LLMProvider
 from src.llm.schemas import ReviewFinding
 
 
@@ -60,10 +61,30 @@ def sample_context():
     )
 
 
+class SequenceMockProvider(LLMProvider):
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.calls: list[str] = []
+
+    def review(self, prompt: str) -> str:
+        self.calls.append(prompt)
+        if self.responses:
+            return self.responses.pop(0)
+        return '{"findings": []}'
+
+
 class ReviewResponseParserTests(unittest.TestCase):
     def setUp(self) -> None:
         self.parser = ReviewResponseParser()
         self.context = sample_context()
+
+    def test_empty_evidence_rejected_by_schema(self) -> None:
+        bad = finding_data(evidence="")
+        with self.assertRaises(ReviewResponseError) as caught:
+            self.parser.parse(response_for(bad), self.context)
+        message = str(caught.exception)
+        self.assertIn("review-schema validation", message)
+        self.assertIn("evidence", message)
 
     def test_valid_structured_response(self) -> None:
         findings = self.parser.parse(response_for(finding_data()), self.context)
@@ -95,6 +116,29 @@ class ReviewResponseParserTests(unittest.TestCase):
     def test_truncated_json_is_reported_separately(self) -> None:
         with self.assertRaisesRegex(ReviewResponseError, "truncated JSON"):
             self.parser.parse('{"findings": [')
+
+    def test_schema_validation_error_includes_sanitized_details(self) -> None:
+        bad = finding_data(line="2")
+        with self.assertRaises(ReviewResponseError) as caught:
+            self.parser.parse(response_for(bad), self.context)
+
+        message = str(caught.exception)
+        self.assertIn("review-schema validation:", message)
+        self.assertIn("findings.0.line", message)
+        self.assertIn("Input should be a valid integer", message)
+        # The raw model output (including source evidence) must not be echoed.
+        self.assertNotIn('"line": "2"', message)
+        self.assertNotIn(CODE, message)
+
+    def test_severity_casing_is_normalized_and_unknown_levels_rejected(self) -> None:
+        findings = self.parser.parse(response_for(finding_data(severity="HIGH")), self.context)
+        self.assertEqual(findings[0].severity, "High")
+
+        findings = self.parser.parse(response_for(finding_data(severity="critical")), self.context)
+        self.assertEqual(findings[0].severity, "Critical")
+
+        with self.assertRaisesRegex(ReviewResponseError, "review-schema validation"):
+            self.parser.parse(response_for(finding_data(severity="urgent")), self.context)
 
     def test_missing_findings_field_is_rejected(self) -> None:
         with self.assertRaisesRegex(ReviewResponseError, "schema validation"):
@@ -178,15 +222,50 @@ class ReviewResponseParserTests(unittest.TestCase):
         findings = self.parser.parse(response_for(finding_data(line=2)), context)
         self.assertEqual(len(findings), 1)
 
-    def test_mixed_valid_and_invalid_findings_are_rejected(self) -> None:
+    def test_mixed_valid_and_invalid_findings_preserves_valid_findings(self) -> None:
+        findings = self.parser.parse(
+            response_for(
+                finding_data(),
+                finding_data(file="src/other.py"),
+            ),
+            self.context,
+        )
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].file, FILE)
+        self.assertEqual(len(self.parser.last_rejections), 1)
+        rejection = self.parser.last_rejections[0]
+        self.assertEqual(rejection.index, 1)
+        self.assertEqual(rejection.code, "unknown_file")
+        self.assertEqual(rejection.file, "src/other.py")
+        self.assertIn("not in changed_code", rejection.reason)
+        self.assertEqual(rejection.as_dict()["code"], "unknown_file")
+
+    def test_mixed_schema_invalid_finding_does_not_discard_valid_finding(self) -> None:
+        findings = self.parser.parse(
+            response_for(
+                finding_data(),
+                finding_data(line="2"),
+            ),
+            self.context,
+        )
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].file, FILE)
+        self.assertEqual(len(self.parser.last_rejections), 1)
+        rejection = self.parser.last_rejections[0]
+        self.assertEqual(rejection.code, "schema_validation")
+        self.assertIn("findings.1.line", rejection.reason)
+
+    def test_all_invalid_findings_still_reject_response_and_record_reasons(self) -> None:
         with self.assertRaisesRegex(ReviewResponseError, "not in changed_code"):
             self.parser.parse(
-                response_for(
-                    finding_data(),
-                    finding_data(file="src/other.py"),
-                ),
+                response_for(finding_data(file="src/other.py")),
                 self.context,
             )
+
+        self.assertEqual(len(self.parser.last_rejections), 1)
+        self.assertEqual(self.parser.last_rejections[0].code, "unknown_file")
 
     def test_evidence_from_correct_line_is_accepted(self) -> None:
         context = ReviewContextBuilder().build(
@@ -275,6 +354,94 @@ class ReviewResponseParserTests(unittest.TestCase):
                 context,
             )
 
+    def test_pr3_raw_response_shape_with_prose_evidence_is_rejected(self) -> None:
+        path = "src/analysis/rules/security_rules.py"
+        source = "def _is_plausible_private_key(block: str) -> bool:"
+        context = ReviewContextBuilder().build(
+            changed_code={path: source},
+            repository_rules=[],
+            analysis_findings=[],
+            changed_lines={path: [125]},
+            changed_line_content={path: {125: source}},
+        )
+        raw_response = json.dumps(
+            {
+                "findings": [
+                    {
+                        "file": path,
+                        "line": 125,
+                        "category": "Security",
+                        "severity": "High",
+                        "message": "Function has high cyclomatic complexity.",
+                        "evidence": "Function has 34 branches, exceeding the threshold.",
+                        "suggestion": "Refactor into smaller functions.",
+                    },
+                    {
+                        "file": "tests/test_github.py",
+                        "line": 382,
+                        "category": "Correctness",
+                        "severity": "Medium",
+                        "message": "The test has high cyclomatic complexity.",
+                        "evidence": "Function has 12 branches, exceeding the threshold.",
+                        "suggestion": "Split into smaller tests.",
+                    },
+                    {
+                        "file": path,
+                        "line": 193,
+                        "category": "Correctness",
+                        "severity": "Medium",
+                        "message": "Unreachable code follows a return.",
+                        "evidence": "The return makes the following code unreachable.",
+                        "suggestion": "Remove unreachable code.",
+                    },
+                ]
+            }
+        )
+
+        with self.assertRaisesRegex(ReviewResponseError, "does not match the changed line"):
+            self.parser.parse(raw_response, context)
+
+    def test_pr3_shape_preserves_valid_finding_when_sibling_uses_prose_evidence(self) -> None:
+        path = "src/analysis/rules/security_rules.py"
+        source = "def _is_plausible_private_key(block: str) -> bool:"
+        context = ReviewContextBuilder().build(
+            changed_code={path: source},
+            repository_rules=[],
+            analysis_findings=[],
+            changed_lines={path: [125]},
+            changed_line_content={path: {125: source}},
+        )
+        raw_response = response_for(
+            {
+                "file": path,
+                "line": 125,
+                "category": "Security",
+                "severity": "High",
+                "message": "Private-key detection boundary is incorrect.",
+                "evidence": source,
+                "suggestion": None,
+            },
+            {
+                "file": path,
+                "line": 125,
+                "category": "Performance",
+                "severity": "Low",
+                "message": "Function has high cyclomatic complexity.",
+                "evidence": "Function has 34 branches, exceeding the threshold.",
+                "suggestion": None,
+            },
+        )
+
+        findings = self.parser.parse(raw_response, context)
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].evidence, source)
+        self.assertEqual(len(self.parser.last_rejections), 1)
+        self.assertEqual(
+            self.parser.last_rejections[0].code,
+            "unsupported_evidence",
+        )
+
     def test_short_bug_message_is_not_treated_as_duplicate(self) -> None:
         findings = self.parser.parse(
             response_for(
@@ -313,7 +480,155 @@ class ReviewResponseParserTests(unittest.TestCase):
             self.parser.parse("  ")
 
 
+    def test_evidence_from_another_line_cannot_support_finding(self) -> None:
+        context = ReviewContextBuilder().build(
+            pr_title="Fix math behavior",
+            changed_code={FILE: "def add(a, b):\n    total = a + b\n    return total"},
+            repository_rules=[],
+            analysis_findings=[],
+            changed_lines={FILE: [1, 3]},
+            changed_line_content={
+                FILE: {
+                    1: "def add(a, b):",
+                    3: "    return total",
+                }
+            },
+        )
+        finding = finding_data(line=1, evidence="return total")
+        with self.assertRaises(ReviewResponseError):
+            self.parser.parse(response_for(finding), context)
 class ProviderAndPipelineTests(unittest.TestCase):
+    def test_ollama_wall_deadline_closes_active_response_and_reports_wall_timeout(self) -> None:
+        class ImmediateDeadlineTimer:
+            def __init__(self, interval, callback) -> None:
+                self.interval = interval
+                self.callback = callback
+
+            def start(self) -> None:
+                self.callback()
+
+            def cancel(self) -> None:
+                pass
+
+            def is_alive(self) -> bool:
+                return False
+
+            def join(self, timeout=None) -> None:
+                pass
+
+        provider = OllamaProvider(timeout=120)
+        response = ollama_stream(
+            {"response": '{"findings":[]}', "done": True, "done_reason": "stop"}
+        )
+        with (
+            patch("src.llm.ollama_provider.Timer", ImmediateDeadlineTimer),
+            patch("src.llm.ollama_provider.requests.post", return_value=response) as post,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "wall-clock deadline"):
+                provider.review_with_deadline("prompt", timeout_seconds=12)
+
+        self.assertEqual(post.call_args.kwargs["timeout"], 12)
+        response.close.assert_called_once()
+        response.iter_lines.assert_not_called()
+
+    def test_wall_deadline_interrupts_blocked_stream_read(self) -> None:
+        import threading
+        import time
+        from threading import Timer as RealThreadTimer
+
+        provider = OllamaProvider(timeout=10)
+        entered_read = threading.Event()
+        response_closed = threading.Event()
+        timer_threads = []
+
+        class BlockingResponse:
+            def raise_for_status(self):
+                pass
+
+            def iter_lines(self, decode_unicode=True):
+                entered_read.set()
+                if not response_closed.wait(2):
+                    raise AssertionError("Response was not closed by deadline.")
+                raise requests.exceptions.ConnectionError("response closed")
+
+            def close(self):
+                response_closed.set()
+
+        class RealTimer:
+            def __init__(self, interval, callback):
+                self.timer = RealThreadTimer(interval, callback)
+                self.interval = interval
+                self.daemon = False
+
+            def start(self):
+                self.timer.daemon = self.daemon
+                self.timer.start()
+
+            def cancel(self):
+                self.timer.cancel()
+
+            def join(self, timeout=None):
+                self.timer.join(timeout)
+
+            def is_alive(self):
+                return self.timer.is_alive()
+
+        response = BlockingResponse()
+        with (
+            patch("src.llm.ollama_provider.Timer", RealTimer),
+            patch("src.llm.ollama_provider.requests.post", return_value=response),
+        ):
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, "wall-clock deadline"):
+                provider.review_with_deadline("prompt", timeout_seconds=0.15)
+            elapsed = time.monotonic() - started
+
+        self.assertTrue(entered_read.is_set())
+        self.assertTrue(response_closed.is_set())
+        self.assertLess(elapsed, 1.0)
+    def test_wall_deadline_timeout_is_logged_as_total_deadline(self) -> None:
+        provider = OllamaProvider(timeout=120)
+        response = Mock()
+
+        class TimerThatExpiresDuringRead:
+            def __init__(self, interval, callback) -> None:
+                self.callback = callback
+
+            def start(self) -> None:
+                pass
+
+            def cancel(self) -> None:
+                pass
+
+            def is_alive(self) -> bool:
+                return False
+
+            def join(self, timeout=None) -> None:
+                pass
+
+        def iter_lines(decode_unicode=True):
+            timer_instances[0].callback()
+            raise requests.exceptions.ConnectionError("deadline closed response")
+
+        timer_instances = []
+
+        def make_timer(interval, callback):
+            timer = TimerThatExpiresDuringRead(interval, callback)
+            timer_instances.append(timer)
+            return timer
+
+        response.iter_lines.side_effect = iter_lines
+        with (
+            patch("src.llm.ollama_provider.Timer", side_effect=make_timer),
+            patch("src.llm.ollama_provider.requests.post", return_value=response),
+        ):
+            with self.assertLogs("src.llm.ollama_provider", level="WARNING") as logs:
+                with self.assertRaisesRegex(RuntimeError, "wall-clock deadline"):
+                    provider.review_with_deadline("prompt", timeout_seconds=15)
+
+        self.assertIn("outcome=timed_out", "\n".join(logs.output))
+        response.close.assert_called_once()
+
     def test_ollama_success_uses_configured_timeout_and_logs_only_prompt_size(self) -> None:
         provider = OllamaProvider(timeout=37, num_predict=512, num_ctx=4096)
         response = ollama_stream(
@@ -371,6 +686,21 @@ class ProviderAndPipelineTests(unittest.TestCase):
             assert findings == []
             assert pipeline.last_failed_batch_count == 1
             assert any("rejected the model response" in f or "failed" in f.lower() for f in pipeline.last_review_failures)
+
+    def test_schema_failure_failure_message_includes_validation_details(self) -> None:
+        bad_payload = response_for(finding_data(line="2"))
+        response = ollama_stream(
+            {"response": bad_payload, "done": True, "done_reason": "stop", "eval_count": 90}
+        )
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            pipeline = ReviewPipeline(OllamaProvider())
+            pipeline.review(sample_context())
+
+        assert pipeline.last_failed_batch_count == 1
+        joined = " ".join(pipeline.last_review_failures)
+        assert "review-schema validation:" in joined
+        assert "Input should be a valid integer" in joined
+        assert CODE not in joined
 
     def test_ollama_malformed_stream_chunk_is_explained(self) -> None:
         provider = OllamaProvider()
@@ -483,6 +813,38 @@ class ProviderAndPipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "after first output"):
                 provider.review("prompt")
 
+    def test_ollama_timeout_salvages_complete_json_already_received(self) -> None:
+        provider = OllamaProvider()
+        payload = response_for(finding_data())
+
+        def chunks():
+            yield json.dumps({"response": payload, "done": False})
+            raise requests.exceptions.ReadTimeout("idle after full JSON")
+
+        response = Mock()
+        response.iter_lines.return_value = chunks()
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertLogs("src.llm.ollama_provider", level="WARNING") as logs:
+                result = provider.review("prompt")
+
+        self.assertEqual(result, payload)
+        log_output = "\n".join(logs.output)
+        self.assertIn("completed_after_timeout", log_output)
+        self.assertNotIn(payload, log_output)
+
+    def test_ollama_timeout_still_rejects_truncated_json(self) -> None:
+        provider = OllamaProvider()
+
+        def chunks():
+            yield json.dumps({"response": '{"findings": [', "done": False})
+            raise requests.exceptions.ReadTimeout("idle mid-object")
+
+        response = Mock()
+        response.iter_lines.return_value = chunks()
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "after first output"):
+                provider.review("prompt")
+
     def test_ollama_generation_limit_reports_truncated_json(self) -> None:
         provider = OllamaProvider(num_predict=128)
         response = ollama_stream(
@@ -507,6 +869,62 @@ class ProviderAndPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "smaller than num_ctx"):
             OllamaProvider(num_predict=2048, num_ctx=2048)
 
+    def test_ollama_sends_keep_alive_to_keep_model_resident_between_chunks(self) -> None:
+        provider = OllamaProvider()
+        response = ollama_stream(
+            {"response": '{"findings":[]}', "done": True, "done_reason": "stop", "eval_count": 4}
+        )
+        with patch("src.llm.ollama_provider.requests.post", return_value=response) as post:
+            provider.review("prompt")
+
+        self.assertEqual(post.call_args.kwargs["json"]["keep_alive"], "30m")
+
+    def test_ollama_rejects_blank_keep_alive(self) -> None:
+        with self.assertRaisesRegex(ValueError, "keep_alive"):
+            OllamaProvider(keep_alive="   ")
+
+    def test_ollama_chunk_non_dict_is_rejected(self) -> None:
+        provider = OllamaProvider()
+        response = Mock()
+        response.iter_lines.return_value = ["12345"]
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "unexpected format"):
+                provider.review("prompt")
+
+    def test_ollama_chunk_non_string_response_is_rejected(self) -> None:
+        provider = OllamaProvider()
+        response = Mock()
+        response.iter_lines.return_value = ['{"response": 1234}']
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "without valid review text"):
+                provider.review("prompt")
+
+    def test_ollama_empty_stream_is_rejected(self) -> None:
+        provider = OllamaProvider()
+        response = Mock()
+        response.iter_lines.return_value = []
+        with patch("src.llm.ollama_provider.requests.post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "ended before completion"):
+                provider.review("prompt")
+
+    def test_ollama_deadline_controller_safe_double_cleanup(self) -> None:
+        from src.llm.ollama_provider import _RequestDeadlineController
+        controller = _RequestDeadlineController(wall_clock_timeout=10.0)
+        mock_resp = Mock()
+        controller.response_holder["response"] = mock_resp
+        controller.cleanup()
+        controller.cleanup()
+        self.assertEqual(mock_resp.close.call_count, 1)
+
+    def test_ollama_options_num_thread_env_override(self) -> None:
+        import os
+        provider = OllamaProvider()
+        response = ollama_stream({"response": '{"findings":[]}', "done": True})
+        with patch.dict(os.environ, {"REFLEXICODE_OLLAMA_NUM_THREAD": "6"}):
+            with patch("src.llm.ollama_provider.requests.post", return_value=response) as post:
+                provider.review("prompt")
+        self.assertEqual(post.call_args.kwargs["json"]["options"]["num_thread"], 6)
+
     def test_mock_provider_runs_without_ollama(self) -> None:
         mock = MockProvider('{"findings": []}')
         self.assertEqual(mock.review("test prompt"), '{"findings": []}')
@@ -524,7 +942,8 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertIsInstance(mock.last_input, str)
         self.assertIn("Fix user addition function", mock.last_input)
         self.assertIn("AST/static-analysis findings", mock.last_input)
-        self.assertIn("explicitly labelled Changed line", mock.last_input)
+        self.assertIn('"kind":"changed"', mock.last_input)
+        self.assertIn("Copy the complete", mock.last_input)
 
     def test_pipeline_logs_prompt_coverage_without_source_content(self) -> None:
         sensitive = "internal_identifier_should_not_be_logged"
@@ -585,7 +1004,7 @@ class ProviderAndPipelineTests(unittest.TestCase):
             changed_line_content=line_content,
         )
         provider = RecordingProvider()
-        pipeline = ReviewPipeline(provider)
+        pipeline = ReviewPipeline(provider, max_requests=1)
 
         findings = pipeline.review(context)
 
@@ -597,6 +1016,204 @@ class ProviderAndPipelineTests(unittest.TestCase):
         assert len(pipeline.last_unreviewed_files) == file_count - 5
         assert any("scope omitted changed files" in error for error in pipeline.last_review_failures)
         assert pipeline.last_failed_batch_count == 0
+
+    def test_chunks_prioritize_findings_and_review_sequentially(self) -> None:
+        from src.llm.context import ReviewContextBuilder
+
+        class RecordingProvider:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            def review(self, prompt: str) -> str:
+                self.prompts.append(prompt)
+                return '{"findings": []}'
+
+        paths = [f"src/module_{index}.py" for index in range(6)]
+        analysis = [{
+            "file": paths[5],
+            "line": 2,
+            "category": "security",
+            "severity": "critical",
+            "message": "High-priority security finding",
+            "evidence": "    return 5",
+        }]
+        context = ReviewContextBuilder().build(
+            changed_code={path: f"def run():\n    return {index}" for index, path in enumerate(paths)},
+            changed_lines={path: [2] for path in paths},
+            changed_line_content={path: {2: f"    return {index}"} for index, path in enumerate(paths)},
+            analysis_findings=analysis,
+        )
+        provider = RecordingProvider()
+        builder = ReviewPromptBuilder(max_files=2)
+
+        pipeline = ReviewPipeline(provider, prompt_builder=builder, max_requests=2)
+        findings = pipeline.review(context)
+
+        self.assertEqual(findings, [])
+        self.assertEqual(len(provider.prompts), 2)
+        self.assertTrue(all('"kind":"changed"' in prompt for prompt in provider.prompts))
+        self.assertIn(paths[5], provider.prompts[0])
+        self.assertEqual(len(pipeline.last_reviewed_files), 4)
+        self.assertIn(paths[5], pipeline.last_reviewed_files[:2])
+        self.assertEqual(len(pipeline.last_unreviewed_files), 2)
+
+    def test_file_with_omitted_changed_lines_is_not_marked_fully_reviewed(self) -> None:
+        path = "src/large.py"
+        source_lines = [f"value_{index} = '" + ("x" * 60) + "'" for index in range(40)]
+        context = ReviewContextBuilder().build(
+            changed_code={path: "\n".join(source_lines)},
+            changed_lines={path: list(range(1, len(source_lines) + 1))},
+            changed_line_content={
+                path: {line: source for line, source in enumerate(source_lines, start=1)}
+            },
+        )
+        builder = ReviewPromptBuilder(
+            max_prompt_chars=8000,
+            code_chars=1800,
+            analysis_chars=600,
+            rules_chars=300,
+            max_files=1,
+        )
+        pipeline = ReviewPipeline(MockProvider('{"findings": []}'), builder)
+
+        pipeline.review(context)
+
+        self.assertEqual(pipeline.last_reviewed_files, ())
+        self.assertEqual(pipeline.last_partially_reviewed_files, (path,))
+        self.assertEqual(pipeline.last_unreviewed_files, ())
+        self.assertTrue(any("partially reviewed files" in item.casefold() for item in pipeline.last_context_limitations))
+
+    def test_aggregate_budget_skips_chunk_without_minimum_request_window(self) -> None:
+        from src.llm.context import ReviewContextBuilder
+
+        now = [0.0]
+
+        class AdvancingProvider:
+            timeout = 60
+
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, int]] = []
+
+            def review(self, prompt: str) -> str:
+                self.calls.append((prompt, self.timeout))
+                now[0] += 36
+                return '{"findings": []}'
+
+        paths = [f"src/module_{index}.py" for index in range(6)]
+        context = ReviewContextBuilder().build(
+            changed_code={path: f"def run():\n    return {index}" for index, path in enumerate(paths)},
+            changed_lines={path: [2] for path in paths},
+            changed_line_content={path: {2: f"    return {index}"} for index, path in enumerate(paths)},
+        )
+        provider = AdvancingProvider()
+        pipeline = ReviewPipeline(
+            provider,
+            prompt_builder=ReviewPromptBuilder(max_files=2),
+            max_requests=3,
+            review_budget_seconds=90,
+            clock=lambda: now[0],
+        )
+
+        self.assertEqual(pipeline.review(context), [])
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual([timeout for _, timeout in provider.calls], [60])
+        self.assertEqual(len(pipeline.last_reviewed_files), 2)
+        self.assertEqual(len(pipeline.last_unreviewed_files), 4)
+        self.assertEqual(pipeline.last_batch_count, 1)
+        self.assertEqual(pipeline.last_failed_batch_count, 0)
+        self.assertEqual(pipeline.last_review_elapsed_seconds, 36)
+        self.assertTrue(any("below the 60-second minimum request window" in item for item in pipeline.last_context_limitations))
+
+    def test_inflight_chunk_overrun_does_not_schedule_another_request(self) -> None:
+        from src.llm.context import ReviewContextBuilder
+
+        now = [0.0]
+
+        class SlowProvider:
+            timeout = 30
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def review(self, prompt: str) -> str:
+                self.calls += 1
+                now[0] += 36
+                return '{"findings": []}'
+
+        paths = [f"src/module_{index}.py" for index in range(4)]
+        context = ReviewContextBuilder().build(
+            changed_code={path: f"def run():\n    return {index}" for index, path in enumerate(paths)},
+            changed_lines={path: [2] for path in paths},
+            changed_line_content={path: {2: f"    return {index}"} for index, path in enumerate(paths)},
+        )
+        provider = SlowProvider()
+        pipeline = ReviewPipeline(
+            provider,
+            prompt_builder=ReviewPromptBuilder(max_files=2),
+            review_budget_seconds=60,
+            clock=lambda: now[0],
+        )
+
+        pipeline.review(context)
+
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(pipeline.last_review_elapsed_seconds, 36)
+        self.assertEqual(pipeline.last_reviewed_files, ())
+        self.assertEqual(len(pipeline.last_unreviewed_files), 4)
+        self.assertEqual(pipeline.last_failed_batch_count, 1)
+        self.assertTrue(any("exceeded its 30.0-second wall-clock request deadline" in item for item in pipeline.last_review_failures))
+
+    def test_failed_chunk_does_not_discard_later_success_or_hide_omissions(self) -> None:
+        from src.llm.context import ReviewContextBuilder
+
+        class FailThenSucceedProvider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def review(self, prompt: str) -> str:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("simulated Ollama timeout")
+                changed_record = next(
+                    json.loads(line)
+                    for line in prompt.splitlines()
+                    if line.startswith('{"file":')
+                    and '"kind":"changed"' in line
+                )
+                return response_for(
+                    finding_data(
+                        file=changed_record["file"],
+                        line=changed_record["line"],
+                        evidence=changed_record["source"].strip(),
+                        category="Correctness",
+                        severity="Medium",
+                        message="The returned value is incorrect.",
+                    )
+                )
+
+        paths = [f"src/module_{index}.py" for index in range(6)]
+        context = ReviewContextBuilder().build(
+            changed_code={path: f"def run():\n    return {index}" for index, path in enumerate(paths)},
+            changed_lines={path: [2] for path in paths},
+            changed_line_content={path: {2: f"    return {index}"} for index, path in enumerate(paths)},
+        )
+        provider = FailThenSucceedProvider()
+        pipeline = ReviewPipeline(
+            provider,
+            prompt_builder=ReviewPromptBuilder(max_files=2),
+            max_requests=2,
+        )
+
+        findings = pipeline.review(context)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].message, "The returned value is incorrect.")
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(pipeline.last_batch_count, 2)
+        self.assertEqual(pipeline.last_failed_batch_count, 1)
+        self.assertEqual(len(pipeline.last_reviewed_files), 2)
+        self.assertEqual(len(pipeline.last_unreviewed_files), 4)
+        self.assertEqual(pipeline.last_findings_count, 1)
+        self.assertTrue(any("simulated Ollama timeout" in item for item in pipeline.last_review_failures))
 
     def test_semantic_request_failure_reports_all_selected_files_unreviewed(self) -> None:
         from src.llm.context import ReviewContextBuilder
@@ -639,6 +1256,29 @@ class ProviderAndPipelineTests(unittest.TestCase):
 
         self.assertEqual(findings, [])
         self.assertEqual(pipeline.last_failed_batch_count, 1)
+
+    def test_pipeline_preserves_valid_finding_when_sibling_is_invalid(self) -> None:
+        provider = MockProvider(
+            response_for(
+                finding_data(),
+                finding_data(file="src/other.py"),
+            )
+        )
+        pipeline = ReviewPipeline(provider)
+
+        findings = pipeline.review(sample_context())
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].file, FILE)
+        self.assertEqual(pipeline.last_failed_batch_count, 0)
+        self.assertEqual(len(pipeline.last_rejections), 1)
+        self.assertEqual(pipeline.last_rejections[0].code, "unknown_file")
+        self.assertTrue(
+            any(
+                "rejected 1 invalid finding" in item.casefold()
+                for item in pipeline.last_context_limitations
+            )
+        )
 
     def test_context_builder_accepts_structured_pydantic_inputs(self) -> None:
         from pydantic import BaseModel
@@ -723,9 +1363,27 @@ class ProviderAndPipelineTests(unittest.TestCase):
 
         result = ReviewPromptBuilder().build_with_metadata(context)
 
-        self.assertIn("Context (not eligible) line 2: two", result.prompt)
-        self.assertIn("Changed line 4: four", result.prompt)
-        self.assertIn("Context (not eligible) line 6: six", result.prompt)
+        self.assertIn(
+            json.dumps(
+                {"file": FILE, "line": 2, "kind": "context", "source": "two"},
+                separators=(",", ":"),
+            ),
+            result.prompt,
+        )
+        self.assertIn(
+            json.dumps(
+                {"file": FILE, "line": 4, "kind": "changed", "source": "four"},
+                separators=(",", ":"),
+            ),
+            result.prompt,
+        )
+        self.assertIn(
+            json.dumps(
+                {"file": FILE, "line": 6, "kind": "context", "source": "six"},
+                separators=(",", ":"),
+            ),
+            result.prompt,
+        )
         self.assertEqual(result.eligible_changed_lines, {FILE: (4,)})
 
     def test_prompt_configurable_limits_select_only_high_priority_files_and_findings(self) -> None:
@@ -776,5 +1434,153 @@ class ProviderAndPipelineTests(unittest.TestCase):
         self.assertNotIn('"message":"Finding 0"', result.prompt)
         self.assertIn("Return at most 3 important", result.prompt)
 
-    if __name__ == "__main__":
-        unittest.main()
+
+class RetryAndCoverageTests(unittest.TestCase):
+    """Regression tests for bounded retry and coverage reporting."""
+
+    def _context(self):
+        return sample_context()
+
+    def test_empty_evidence_rejected_by_schema(self) -> None:
+        """An empty evidence string is rejected before context validation."""
+        parser = ReviewResponseParser()
+        bad = finding_data(evidence="")
+        with self.assertRaisesRegex(ReviewResponseError, "schema validation"):
+            parser.parse(response_for(bad))
+
+    def test_valid_empty_findings_accepted(self) -> None:
+        """A response with no findings is valid under the contract."""
+        parser = ReviewResponseParser()
+        result = parser.parse('{"findings": []}')
+        self.assertEqual(result, [])
+
+    def test_invalid_json_rejected_safely(self) -> None:
+        parser = ReviewResponseParser()
+        with self.assertRaisesRegex(ReviewResponseError, "valid JSON"):
+            parser.parse("not json at all")
+
+    def test_runtime_error_not_retried_as_schema_error(self) -> None:
+        """Transport/connection failures (RuntimeError) bypass the retry path."""
+        class ConnectionFailProvider:
+            def review(self, prompt: str) -> str:
+                raise RuntimeError("simulated connection failure")
+
+        pipeline = ReviewPipeline(ConnectionFailProvider())
+        findings = pipeline.review(self._context())
+        self.assertEqual(findings, [])
+        self.assertEqual(pipeline.last_failed_batch_count, 1)
+        joined = " ".join(pipeline.last_review_failures)
+        # Must NOT say "correction retry" — no retry was attempted
+        self.assertNotIn("correction retry", joined.lower())
+        self.assertIn("simulated connection failure", joined)
+
+    def test_successful_retry_returns_corrected_findings(self) -> None:
+        """A schema failure on the first call is corrected by the retry."""
+        good_response = response_for(finding_data())
+        call_count = [0]
+
+        class TwoPhaseProvider:
+            def review(self, prompt: str) -> str:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    # First call: return empty evidence (schema failure)
+                    return response_for(finding_data(evidence=""))
+                # Second call (correction retry): return valid response
+                return good_response
+
+        pipeline = ReviewPipeline(TwoPhaseProvider())
+        findings = pipeline.review(self._context())
+        self.assertEqual(call_count[0], 2)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].evidence, "return a - b")
+        self.assertEqual(pipeline.last_failed_batch_count, 0)
+
+    def test_retry_exhaustion_reported_correctly(self) -> None:
+        """If the retry also fails with a schema error, the batch is failed."""
+        call_count = [0]
+
+        class AlwaysBadProvider:
+            def review(self, prompt: str) -> str:
+                call_count[0] += 1
+                return response_for(finding_data(evidence=""))
+
+        pipeline = ReviewPipeline(AlwaysBadProvider())
+        findings = pipeline.review(self._context())
+        self.assertEqual(findings, [])
+        self.assertEqual(call_count[0], 2)  # original + one retry
+        self.assertEqual(pipeline.last_failed_batch_count, 1)
+        joined = " ".join(pipeline.last_review_failures)
+        self.assertIn("review-schema validation:", joined)
+
+    def test_retry_does_not_duplicate_findings(self) -> None:
+        """A successful retry replaces the first attempt; findings are not doubled."""
+        good_response = response_for(finding_data())
+        call_count = [0]
+
+        class TwoPhaseProvider:
+            def review(self, prompt: str) -> str:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return response_for(finding_data(evidence=""))
+                return good_response
+
+        pipeline = ReviewPipeline(TwoPhaseProvider())
+        findings = pipeline.review(self._context())
+        self.assertEqual(len(findings), 1)  # not 2
+
+    def test_original_schema_error_preserved_when_retry_transport_fails(self) -> None:
+        """When retry hits a transport error, the original schema-validation
+        error details are reported, not the transport error."""
+        call_count = [0]
+
+        class FirstBadThenTransportFailProvider:
+            def review(self, prompt: str) -> str:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return response_for(finding_data(evidence=""))
+                raise RuntimeError("network down during retry")
+
+        pipeline = ReviewPipeline(FirstBadThenTransportFailProvider())
+        findings = pipeline.review(self._context())
+        self.assertEqual(findings, [])
+        self.assertEqual(pipeline.last_failed_batch_count, 1)
+        joined = " ".join(pipeline.last_review_failures)
+        # The original schema error is what gets reported
+        self.assertIn("review-schema validation:", joined)
+        # The transport error during retry does NOT replace the schema error
+        self.assertNotIn("network down during retry", joined)
+
+    def test_def004_does_not_fire_on_except_handler_body(self) -> None:
+        """DEF004 must not flag code inside an except handler as unreachable."""
+        import ast
+        from src.analysis.diff_parser import DiffLine
+        from src.analysis.rules.static_rules import run_static_ast_rules
+
+        source = (
+            "def f():\n"
+            "    try:\n"
+            "        x = 1\n"
+            "    except ValueError:\n"
+            "        raise RuntimeError('bad')\n"
+            "    return x\n"
+        )
+        tree = ast.parse(source)
+        lines = [
+            DiffLine(
+                number=i + 1,
+                old_number=None,
+                text=line,
+                raw_prefix="+",
+                is_added=True,
+                is_deleted=False,
+                is_context=False,
+            )
+            for i, line in enumerate(source.splitlines())
+        ]
+        findings = run_static_ast_rules(tree, lines, line_offset=0)
+        def004_findings = [f for f in findings if f.rule_id == "DEF004"]
+        self.assertEqual(def004_findings, [], msg=f"Unexpected DEF004: {def004_findings}")
+
+
+if __name__ == "__main__":
+    unittest.main()

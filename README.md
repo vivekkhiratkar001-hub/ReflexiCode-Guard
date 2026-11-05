@@ -74,14 +74,21 @@ room for output and template overhead. Use
 `REFLEXICODE_OLLAMA_TIMEOUT`, `REFLEXICODE_OLLAMA_NUM_PREDICT`, and
 `REFLEXICODE_OLLAMA_NUM_CTX`.
 
-Each semantic review is one bounded request. Defaults are 10,000 prompt
-characters overall, 4,000 characters of changed code with nearby hunk context,
-2,500 characters of supporting analysis, at most five selected files, and at
-most three semantic findings. Character-to-token conversion is approximate
-(logged as an estimate); hardware, model loading, and generated output affect
-runtime. Configure limits with `--review-prompt-chars`, `--review-code-chars`,
-`--review-analysis-chars`, `--review-max-files`, `--review-max-findings`, or
-their `REFLEXICODE_REVIEW_*` environment variables.
+Semantic review uses bounded, sequential chunks: at most three files per request,
+five requests per PR, and a 240-second aggregate scheduling budget by default.
+The scheduler starts another request only when at least its configured per-call
+timeout remains. The budget prevents additional requests from starting after it
+expires; an already-running local Ollama generation is not forcibly cancelled.
+The provider timeout is a socket-idle timeout, not a hard wall-clock deadline,
+so one in-flight request can slightly overrun the aggregate budget. Defaults are
+10,000 prompt characters overall, 4,000 changed-code
+characters with nearby hunk context, 2,500 characters of supporting analysis,
+and at most three findings per request. Character-to-token conversion is
+approximate (logged as an estimate); hardware, model loading, and generated
+output affect runtime. Configure limits with `--review-prompt-chars`,
+`--review-code-chars`, `--review-analysis-chars`, `--review-max-files`,
+`--review-max-findings`, `--review-max-requests`, and
+`--review-budget-seconds`, or their `REFLEXICODE_REVIEW_*` environment variables.
 
 The CLI reports semantic status separately from total findings:
 `success_with_findings`, `success_no_findings`, `partial`, `failed`,
@@ -90,7 +97,8 @@ empty output is distinct from failed or invalid model output. Deterministic
 static/security findings are produced locally and retained on semantic failure;
 LLM findings are separately validated against selected files, changed lines,
 supported categories/severities, and source evidence. Neither approach proves
-that every defect was found. Logs contain request metadata and timings, not
+that every defect was found. Reviews that exhaust the request/time budget list
+all omitted files and remain `partial`; they are never labelled complete. Logs contain request metadata and timings, not
 prompts or source text. Dry runs do not publish comments.
 
 The offline unit tests do not need Ollama or GitHub credentials. For an

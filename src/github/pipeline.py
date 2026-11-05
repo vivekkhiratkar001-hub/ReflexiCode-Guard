@@ -48,7 +48,10 @@ def review_pr(
                 pipeline = getattr(reviewer, "pipeline", None)
                 semantic_scope_partial = (
                     getattr(pipeline, "last_failed_batch_count", None) == 0
-                    and bool(getattr(reviewer, "unreviewed_files", ()))
+                    and bool(
+                        getattr(reviewer, "unreviewed_files", ())
+                        or getattr(reviewer, "partially_reviewed_files", ())
+                    )
                 )
         except RuntimeError as error:
             status = ReviewStatus.PARTIAL
@@ -56,14 +59,15 @@ def review_pr(
 
     summary = f"Review completed with {len(findings)} finding(s)."
     if status is ReviewStatus.PARTIAL:
+        clean_err = reviewer_error.rstrip(".,; ") if reviewer_error else "unknown failure"
         if semantic_scope_partial:
             summary += (
-                f" Semantic review was partial: {reviewer_error}. "
+                f" Semantic review was partial: {clean_err}. "
                 "Static findings are included."
             )
         else:
             summary += (
-                f" Semantic review failed: {reviewer_error}. "
+                f" Semantic review failed: {clean_err}. "
                 "Static findings are included."
             )
     return ReviewResult(

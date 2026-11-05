@@ -96,8 +96,8 @@ The active project implementation uses a local Ollama model:
 
 The provider follows the pattern:
 
-1. Build one prioritized prompt within configured character and file limits.
-2. Send it once to the configured local Ollama endpoint; no automatic model fallback or retry is performed.
+1. Rank changed files and group them into bounded chunks.
+2. Submit chunks sequentially, subject to a maximum request count and aggregate scheduling budget; no concurrent requests, retry loop, or automatic model fallback is performed.
 3. Validate the HTTP response.
 4. Read the result JSON.
 5. Extract only a completed response (incomplete streams and token-limit truncation fail).
@@ -144,7 +144,13 @@ The prompt builder creates a structured review prompt that tells the model to:
 - return only valid JSON
 
 Default bounds are 10,000 prompt characters, 4,000 changed-code characters,
-2,500 supporting-analysis characters, five files, and three findings. Changed
+2,500 supporting-analysis characters, three files per request, five sequential
+requests per review, a 240-second aggregate scheduling budget, and three findings
+per response. The aggregate budget prevents starting another chunk after expiry;
+the scheduler also requires the full configured per-request timeout to remain
+before starting another chunk. It cannot forcibly cancel a currently executing
+local Ollama generation. The provider timeout is a socket-idle timeout rather
+than a strict wall-clock request deadline. Changed
 lines are prioritized and include nearby patch context where it fits. Analysis
 evidence is deduplicated and its source excerpt is not repeated in the findings
 section. Omitted files/lines are not claimed as semantically reviewed.
@@ -199,11 +205,11 @@ The actual orchestration is in ReviewPipeline.
 The flow is:
 
 ReviewContext
-→ One bounded prioritized prompt
-→ Provider
-→ Complete JSON
-→ Parser / selected-context validation
-→ Deduplicated ReviewFinding[]
+→ Prioritized file chunks within request/time caps
+→ Sequential provider calls
+→ Complete JSON per successful chunk
+→ Parser / per-chunk selected-context validation
+→ Cross-chunk deduplicated ReviewFinding[]
 
 The CLI reports semantic status separately from aggregate finding count:
 `success_with_findings`, `success_no_findings`, `partial`, `failed`,

@@ -138,6 +138,8 @@ def test_cli_pipeline_wires_configured_ollama_and_review_budgets() -> None:
         review_analysis_chars=2000,
         review_max_files=4,
         review_max_findings=2,
+        review_max_requests=2,
+        review_budget_seconds=180,
     )
 
     pipeline = build_pipeline(config)
@@ -152,6 +154,8 @@ def test_cli_pipeline_wires_configured_ollama_and_review_budgets() -> None:
     assert pipeline.prompt_builder.analysis_chars == 2000
     assert pipeline.prompt_builder.max_files == 4
     assert pipeline.prompt_builder.max_findings == 2
+    assert pipeline.max_requests == 2
+    assert pipeline.review_budget_seconds == 180
 
 
 def test_orchestrator_preserves_static_findings_and_reports_semantic_timeout() -> None:
@@ -233,6 +237,8 @@ def test_cli_exits_nonzero_for_failed_semantic_review(monkeypatch, capsys) -> No
 
 
 def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None:
+    from src.llm.prompts import ReviewPromptBuilder
+
     files = [
         {
             "filename": f"src/module_{index:02}.py",
@@ -246,7 +252,11 @@ def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None
     ]
     session = _session(files=files)
     client = GitHubClient(token="t", session=session, sleeper=lambda _: None)
-    pipeline = ReviewPipeline(MockProvider('{"findings": []}'))
+    pipeline = ReviewPipeline(
+        MockProvider('{"findings": []}'),
+        prompt_builder=ReviewPromptBuilder(max_files=2),
+        max_requests=3,
+    )
 
     summary = ReviewOrchestrator(client, pipeline, dry_run=True).run("acme", "demo", 7)
 
@@ -254,12 +264,60 @@ def test_orchestrator_reports_prioritized_context_coverage_limitations() -> None
     assert any("Semantic review scope omitted changed files" in error for error in summary.errors)
     assert any("Semantic review was partial" in error for error in summary.errors)
     assert not any("Semantic review failed" in error for error in summary.errors)
-    assert summary.semantic_batches_total == 1
+    assert summary.semantic_batches_total == 3
     assert summary.semantic_batches_failed == 0
-    assert len(summary.reviewed_files) == 5
-    assert len(summary.unreviewed_files) == 15
-    assert len(pipeline.provider.inputs) == 1
+    assert len(summary.reviewed_files) == 6
+    assert len(summary.unreviewed_files) == 14
+    assert len(pipeline.provider.inputs) == 3
     assert all(isinstance(prompt, str) and len(prompt) <= 10000 for prompt in pipeline.provider.inputs)
+
+
+def test_summary_distinguishes_file_with_partially_included_changed_lines() -> None:
+    from src.llm.prompts import ReviewPromptBuilder
+
+    path = "src/large.py"
+    source_lines = [f"value_{index} = '" + ("x" * 220) + "'" for index in range(12)]
+    patch = "@@ -0,0 +1,12 @@\n" + "\n".join(f"+{line}" for line in source_lines) + "\n"
+    session = _session(
+        files=[
+            {
+                "filename": path,
+                "status": "added",
+                "patch": patch,
+                "additions": len(source_lines),
+                "deletions": 0,
+                "changes": len(source_lines),
+            }
+        ]
+    )
+
+    class EmptyAnalysis:
+        def get_findings(self, pr, files, changed_code):
+            return []
+
+    pipeline = ReviewPipeline(
+        MockProvider('{"findings": []}'),
+        ReviewPromptBuilder(
+            max_prompt_chars=6500,
+            code_chars=1700,
+            analysis_chars=700,
+            rules_chars=300,
+            max_files=1,
+        ),
+    )
+    summary = ReviewOrchestrator(
+        GitHubClient(token="t", session=session, sleeper=lambda _: None),
+        pipeline,
+        analysis_provider=EmptyAnalysis(),
+        dry_run=True,
+    ).run("acme", "demo", 7)
+
+    assert summary.semantic_status == "partial"
+    assert summary.reviewed_files == []
+    assert summary.partially_reviewed_files == [path]
+    assert summary.unreviewed_files == []
+    assert "#### Partially reviewed files (some changed lines omitted)\n- src/large.py" in summary.to_markdown()
+    assert all(call.args[0] != "POST" for call in session.request.call_args_list)
 
 
 def test_orchestrator_publishes_shared_static_findings_and_deduplicates_llm() -> None:

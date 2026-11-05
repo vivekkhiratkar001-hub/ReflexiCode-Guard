@@ -138,12 +138,28 @@ class ReviewSummary:
     unmapped_findings: list[str] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
     reviewed_files: list[str] = field(default_factory=list)
+    partially_reviewed_files: list[str] = field(default_factory=list)
     unreviewed_files: list[str] = field(default_factory=list)
     semantic_batches_total: int = 0
     semantic_batches_failed: int = 0
+    semantic_batches_succeeded: int = 0
+    semantic_batches_skipped: int = 0
+    semantic_chunks_total: int = 0
+    semantic_elapsed_seconds: float = 0.0
+    semantic_budget_seconds: int = 0
     semantic_status: str = "not_run"
     semantic_findings: int = 0
     static_findings: int = 0
+    llm_provider: str = ""
+    llm_model: str = ""
+    last_used_model: str = ""
+    fallback_model: str | None = None
+    fallback_attempted: bool = False
+    fallback_succeeded: bool = False
+    batches_retried: int = 0
+    budget_exhausted: bool = False
+    root_failure_category: str | None = None
+    root_failure_message: str | None = None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     intended_comments: list[InlineComment] = field(default_factory=list)
@@ -166,9 +182,30 @@ class ReviewSummary:
         unmapped = "\n".join(f"- {item}" for item in self.unmapped_findings) or "- none"
         skipped = "\n".join(f"- {item}" for item in self.skipped_files) or "- none"
         reviewed = "\n".join(f"- {item}" for item in self.reviewed_files) or "- none"
+        partially_reviewed = "\n".join(
+            f"- {item}" for item in self.partially_reviewed_files
+        ) or "- none"
         unreviewed = "\n".join(f"- {item}" for item in self.unreviewed_files) or "- none"
         errors = "\n".join(f"- {item}" for item in self.errors) or "- none"
         warnings = "\n".join(f"- {item}" for item in self.warnings) or "- none"
+        model_display = self.llm_model
+        if self.fallback_succeeded and self.last_used_model:
+            model_display += f" (fallback succeeded: {self.last_used_model})"
+        elif self.fallback_attempted and self.fallback_model:
+            model_display += f" (fallback attempted: {self.fallback_model})"
+
+        provider_section = ""
+        if self.llm_provider:
+            provider_section = f"- LLM provider: {self.llm_provider}\n- LLM model: {model_display or 'default'}\n"
+
+        retried_line = f"- Retried batches: {self.batches_retried}\n" if self.batches_retried else ""
+        budget_text = " (budget exhausted)" if self.budget_exhausted else ""
+        failure_diag_text = (
+            f"- Failure diagnosis: [{self.root_failure_category}] {self.root_failure_message}\n"
+            if self.root_failure_message
+            else ""
+        )
+
         return f"""## ReflexiCode-Guard review summary
 
 - Mode: {mode}
@@ -189,14 +226,20 @@ class ReviewSummary:
 {skipped}
 
 ### Semantic review coverage
-- Semantic status: {self.semantic_status}
+{provider_section}- Semantic status: {self.semantic_status}
 - Semantic findings: {self.semantic_findings}
 - Deterministic findings: {self.static_findings}
 - Batches: {self.semantic_batches_total}
 - Failed batches: {self.semantic_batches_failed}
-
+- Successful batches: {self.semantic_batches_succeeded}
+- Skipped batches: {self.semantic_batches_skipped}
+{retried_line}- Elapsed/budget seconds: {self.semantic_elapsed_seconds:.1f}/{self.semantic_budget_seconds}{budget_text}
+{failure_diag_text}
 #### Reviewed files
 {reviewed}
+
+#### Partially reviewed files (some changed lines omitted)
+{partially_reviewed}
 
 #### Not reviewed files
 {unreviewed}

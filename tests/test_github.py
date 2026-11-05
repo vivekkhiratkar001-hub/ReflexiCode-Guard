@@ -387,8 +387,10 @@ def test_ollama_timeout_configuration_is_validated(monkeypatch) -> None:
     assert config.review_prompt_chars == 10000
     assert config.review_code_chars == 4000
     assert config.review_analysis_chars == 2500
-    assert config.review_max_files == 5
+    assert config.review_max_files == 3
     assert config.review_max_findings == 3
+    assert config.review_max_requests == 5
+    assert config.review_budget_seconds == 240
 
     monkeypatch.setenv("REFLEXICODE_OLLAMA_TIMEOUT", "45")
     assert build_config(owner="acme", repo="demo", pr_number=3).ollama_timeout == 45
@@ -410,6 +412,8 @@ def test_ollama_generation_and_review_budgets_are_configurable(monkeypatch) -> N
     monkeypatch.setenv("REFLEXICODE_REVIEW_ANALYSIS_CHARS", "2000")
     monkeypatch.setenv("REFLEXICODE_REVIEW_MAX_FILES", "4")
     monkeypatch.setenv("REFLEXICODE_REVIEW_MAX_FINDINGS", "2")
+    monkeypatch.setenv("REFLEXICODE_REVIEW_MAX_REQUESTS", "2")
+    monkeypatch.setenv("REFLEXICODE_REVIEW_BUDGET_SECONDS", "180")
 
     config = build_config(owner="acme", repo="demo", pr_number=3)
 
@@ -421,6 +425,8 @@ def test_ollama_generation_and_review_budgets_are_configurable(monkeypatch) -> N
     assert config.review_analysis_chars == 2000
     assert config.review_max_files == 4
     assert config.review_max_findings == 2
+    assert config.review_max_requests == 2
+    assert config.review_budget_seconds == 180
 
 
 @pytest.mark.parametrize(
@@ -433,6 +439,8 @@ def test_ollama_generation_and_review_budgets_are_configurable(monkeypatch) -> N
         ("review_analysis_chars", 100, "REFLEXICODE_REVIEW_ANALYSIS_CHARS"),
         ("review_max_files", 0, "REFLEXICODE_REVIEW_MAX_FILES"),
         ("review_max_findings", 9, "REFLEXICODE_REVIEW_MAX_FINDINGS"),
+        ("review_max_requests", 11, "REFLEXICODE_REVIEW_MAX_REQUESTS"),
+        ("review_budget_seconds", 601, "REFLEXICODE_REVIEW_BUDGET_SECONDS"),
     ],
 )
 def test_ollama_generation_and_review_settings_validate_bounds(
