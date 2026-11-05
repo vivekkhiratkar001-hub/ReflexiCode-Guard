@@ -15,6 +15,21 @@ from .exceptions import GitHubConfigError
 
 
 DEFAULT_API_URL = "https://api.github.com"
+DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:7b"
+DEFAULT_OLLAMA_TIMEOUT = 120
+MAX_OLLAMA_TIMEOUT = 300
+DEFAULT_LLM_PROVIDER = "ollama"
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_GEMINI_FALLBACK_MODEL = "gemini-1.5-flash"
+DEFAULT_OLLAMA_NUM_PREDICT = 512
+DEFAULT_OLLAMA_NUM_CTX = 4096
+DEFAULT_REVIEW_PROMPT_CHARS = 10000
+DEFAULT_REVIEW_CODE_CHARS = 4000
+DEFAULT_REVIEW_ANALYSIS_CHARS = 2500
+DEFAULT_REVIEW_MAX_FILES = 3
+DEFAULT_REVIEW_MAX_FINDINGS = 3
+DEFAULT_REVIEW_MAX_REQUESTS = 5
+DEFAULT_REVIEW_BUDGET_SECONDS = 240
 
 
 def _truthy(value: str | None, default: bool = False) -> bool:
@@ -37,7 +52,22 @@ class GitHubAppConfig:
     mock_llm_response: str
     rules_file: Path | None
     analysis_file: Path | None
+    ollama_model: str = DEFAULT_OLLAMA_MODEL
+    ollama_timeout: int = DEFAULT_OLLAMA_TIMEOUT
+    ollama_num_predict: int = DEFAULT_OLLAMA_NUM_PREDICT
+    ollama_num_ctx: int = DEFAULT_OLLAMA_NUM_CTX
+    review_prompt_chars: int = DEFAULT_REVIEW_PROMPT_CHARS
+    review_code_chars: int = DEFAULT_REVIEW_CODE_CHARS
+    review_analysis_chars: int = DEFAULT_REVIEW_ANALYSIS_CHARS
+    review_max_files: int = DEFAULT_REVIEW_MAX_FILES
+    review_max_findings: int = DEFAULT_REVIEW_MAX_FINDINGS
+    review_max_requests: int = DEFAULT_REVIEW_MAX_REQUESTS
+    review_budget_seconds: int = DEFAULT_REVIEW_BUDGET_SECONDS
     head_sha: str | None = None
+    llm_provider: str = DEFAULT_LLM_PROVIDER
+    gemini_model: str = DEFAULT_GEMINI_MODEL
+    gemini_fallback_model: str | None = None
+    gemini_max_retries: int | None = None
 
     def require_token(self, *, for_write: bool) -> str:
         if self.token:
@@ -64,13 +94,40 @@ def _split_repository(value: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _integer_setting(
+    value: int | None,
+    environment_name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+    description: str,
+) -> int:
+    raw_value: int | str = (
+        value
+        if value is not None
+        else os.environ.get(environment_name, str(default))
+    )
+    try:
+        resolved = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise GitHubConfigError(
+            f"{environment_name} must be an integer from {minimum} to {maximum} ({description})."
+        ) from exc
+    if not minimum <= resolved <= maximum:
+        raise GitHubConfigError(
+            f"{environment_name} must be an integer from {minimum} to {maximum} ({description})."
+        )
+    return resolved
+
+
 def load_github_event(event_path: Path) -> dict:
     try:
         payload = json.loads(event_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise GitHubConfigError(f"GitHub event file not found: {event_path}") from exc
+        raise GitHubConfigError(f"GitHub event file not found: {event_path}")
     except json.JSONDecodeError as exc:
-        raise GitHubConfigError(f"GitHub event file is not valid JSON: {event_path}") from exc
+        raise GitHubConfigError(f"GitHub event file is not valid JSON: {event_path}")
     if not isinstance(payload, dict):
         raise GitHubConfigError("GitHub event payload must be a JSON object.")
     return payload
@@ -91,7 +148,7 @@ def config_from_event(payload: dict) -> tuple[str, str, int, str | None]:
     try:
         pr_number = int(number)
     except (TypeError, ValueError) as exc:
-        raise GitHubConfigError(f"Invalid pull request number in event payload: {number!r}.") from exc
+        raise GitHubConfigError(f"Invalid pull request number in event payload: {number!r}.")
     owner, repo = _split_repository(str(full_name))
     return owner, repo, pr_number, str(sha) if sha else None
 
@@ -108,6 +165,21 @@ def build_config(
     mock_llm_response: str | None = None,
     rules_file: str | None = None,
     analysis_file: str | None = None,
+    ollama_timeout: int | None = None,
+    ollama_model: str | None = None,
+    ollama_num_predict: int | None = None,
+    ollama_num_ctx: int | None = None,
+    review_prompt_chars: int | None = None,
+    review_code_chars: int | None = None,
+    review_analysis_chars: int | None = None,
+    review_max_files: int | None = None,
+    review_max_findings: int | None = None,
+    review_max_requests: int | None = None,
+    review_budget_seconds: int | None = None,
+    llm_provider: str | None = None,
+    gemini_model: str | None = None,
+    gemini_fallback_model: str | None = None,
+    gemini_max_retries: int | None = None,
     event_path: str | None = None,
     publish: bool = False,
 ) -> GitHubAppConfig:
@@ -134,8 +206,7 @@ def build_config(
         except ValueError as exc:
             raise GitHubConfigError(
                 f"GITHUB_PR_NUMBER must be an integer, got {os.environ['GITHUB_PR_NUMBER']!r}."
-            ) from exc
-
+                )
     if not resolved_owner or not resolved_repo or resolved_pr is None:
         raise GitHubConfigError(
             "Missing pull-request identity. Provide --owner, --repo, and --pr-number "
@@ -148,9 +219,156 @@ def build_config(
     if resolved_token is not None:
         resolved_token = resolved_token.strip() or None
 
-    # A non-publishing run is always a dry run. An environment variable must
-    # never silently enable GitHub writes; publication requires the explicit
-    # `publish=True` gate (wired to the CLI's --publish option).
+    raw_provider = (
+        llm_provider
+        or os.environ.get("REFLEXICODE_LLM_PROVIDER")
+        or DEFAULT_LLM_PROVIDER
+    ).strip().lower()
+    if raw_provider not in {"ollama", "gemini"}:
+        raise GitHubConfigError(
+            f"REFLEXICODE_LLM_PROVIDER must be 'ollama' or 'gemini', got {raw_provider!r}."
+        )
+    resolved_llm_provider = raw_provider
+
+    resolved_gemini_model = (
+        gemini_model
+        or os.environ.get("REFLEXICODE_GEMINI_MODEL")
+        or DEFAULT_GEMINI_MODEL
+    ).strip()
+    if not resolved_gemini_model:
+        raise GitHubConfigError("Gemini model name must contain 1 to 200 characters.")
+
+    resolved_gemini_fallback = (
+        gemini_fallback_model
+        or os.environ.get("REFLEXICODE_GEMINI_FALLBACK_MODEL")
+    )
+    if resolved_gemini_fallback is not None:
+        resolved_gemini_fallback = resolved_gemini_fallback.strip() or None
+
+    raw_retries = (
+        gemini_max_retries
+        if gemini_max_retries is not None
+        else os.environ.get("REFLEXICODE_GEMINI_MAX_RETRIES")
+    )
+    resolved_gemini_retries: int | None = None
+    if raw_retries is not None:
+        try:
+            resolved_gemini_retries = int(raw_retries)
+        except (TypeError, ValueError) as exc:
+            raise GitHubConfigError("REFLEXICODE_GEMINI_MAX_RETRIES must be an integer.") from exc
+        if resolved_gemini_retries < 0:
+            raise GitHubConfigError("REFLEXICODE_GEMINI_MAX_RETRIES must be non-negative.")
+
+    model = (ollama_model or os.environ.get("REFLEXICODE_OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL).strip()
+    if not model or len(model) > 200:
+        raise GitHubConfigError("Ollama model name must contain 1 to 200 characters.")
+
+    raw_timeout = os.environ.get("REFLEXICODE_OLLAMA_TIMEOUT")
+    try:
+        timeout_value = (
+            ollama_timeout
+            if ollama_timeout is not None
+            else int(raw_timeout) if raw_timeout is not None else DEFAULT_OLLAMA_TIMEOUT
+        )
+    except ValueError as exc:
+        raise GitHubConfigError(
+            f"REFLEXICODE_OLLAMA_TIMEOUT must be an integer between 1 and {MAX_OLLAMA_TIMEOUT} seconds."
+        ) from exc
+    if timeout_value < 1 or timeout_value > MAX_OLLAMA_TIMEOUT:
+        raise GitHubConfigError(
+            f"Ollama timeout must be an integer between 1 and {MAX_OLLAMA_TIMEOUT} seconds."
+        )
+
+    num_predict = _integer_setting(
+        ollama_num_predict,
+        "REFLEXICODE_OLLAMA_NUM_PREDICT",
+        DEFAULT_OLLAMA_NUM_PREDICT,
+        minimum=64,
+        maximum=2048,
+        description="generation token limit",
+    )
+    num_ctx = _integer_setting(
+        ollama_num_ctx,
+        "REFLEXICODE_OLLAMA_NUM_CTX",
+        DEFAULT_OLLAMA_NUM_CTX,
+        minimum=2048,
+        maximum=32768,
+        description="model context token limit",
+    )
+    if num_predict >= num_ctx:
+        raise GitHubConfigError(
+            "Ollama num_predict must be smaller than num_ctx."
+        )
+    prompt_chars = _integer_setting(
+        review_prompt_chars,
+        "REFLEXICODE_REVIEW_PROMPT_CHARS",
+        DEFAULT_REVIEW_PROMPT_CHARS,
+        minimum=2500,
+        maximum=20000,
+        description="total review prompt character limit",
+    )
+    code_chars = _integer_setting(
+        review_code_chars,
+        "REFLEXICODE_REVIEW_CODE_CHARS",
+        DEFAULT_REVIEW_CODE_CHARS,
+        minimum=500,
+        maximum=12000,
+        description="changed-code character budget",
+    )
+    analysis_chars = _integer_setting(
+        review_analysis_chars,
+        "REFLEXICODE_REVIEW_ANALYSIS_CHARS",
+        DEFAULT_REVIEW_ANALYSIS_CHARS,
+        minimum=500,
+        maximum=10000,
+        description="analysis evidence character budget",
+    )
+    max_files = _integer_setting(
+        review_max_files,
+        "REFLEXICODE_REVIEW_MAX_FILES",
+        DEFAULT_REVIEW_MAX_FILES,
+        minimum=1,
+        maximum=20,
+        description="maximum selected changed files",
+    )
+    max_findings = _integer_setting(
+        review_max_findings,
+        "REFLEXICODE_REVIEW_MAX_FINDINGS",
+        DEFAULT_REVIEW_MAX_FINDINGS,
+        minimum=1,
+        maximum=8,
+        description="maximum semantic findings returned",
+    )
+    max_requests_limit = 50 if resolved_llm_provider == "gemini" else 10
+    max_requests = _integer_setting(
+        review_max_requests,
+        "REFLEXICODE_REVIEW_MAX_REQUESTS",
+        DEFAULT_REVIEW_MAX_REQUESTS,
+        minimum=1,
+        maximum=max_requests_limit,
+        description="maximum sequential requests per PR review",
+    )
+    review_budget = _integer_setting(
+        review_budget_seconds,
+        "REFLEXICODE_REVIEW_BUDGET_SECONDS",
+        DEFAULT_REVIEW_BUDGET_SECONDS,
+        minimum=30,
+        maximum=600,
+        description="aggregate semantic-review scheduling budget in seconds",
+    )
+    if code_chars + analysis_chars + 600 + 1500 >= prompt_chars:
+        raise GitHubConfigError(
+            "Review code and analysis budgets must leave room for rules and instructions "
+            "within the total prompt limit."
+        )
+    if resolved_llm_provider != "gemini":
+        estimated_prompt_tokens = (prompt_chars + 3) // 4
+        if estimated_prompt_tokens + num_predict >= num_ctx:
+            raise GitHubConfigError(
+                "Configured review prompt and output token budgets may exceed Ollama num_ctx; "
+                "increase num_ctx or reduce the prompt/output limits."
+            )
+
     resolved_dry_run = not publish or dry_run is True
 
     resolved_mock = (
@@ -178,8 +396,22 @@ def build_config(
         ),
         analysis_file=Path(analysis_file) if analysis_file else (
             Path(os.environ["REFLEXICODE_ANALYSIS_FILE"])
-            if os.environ.get("REFLEXICODE_ANALYSIS_FILE")
-            else None
+            if os.environ.get("REFLEXICODE_ANALYSIS_FILE") else None
         ),
+        ollama_model=model,
+        ollama_timeout=timeout_value,
+        ollama_num_predict=num_predict,
+        ollama_num_ctx=num_ctx,
+        review_prompt_chars=prompt_chars,
+        review_code_chars=code_chars,
+        review_analysis_chars=analysis_chars,
+        review_max_files=max_files,
+        review_max_findings=max_findings,
+        review_max_requests=max_requests,
+        review_budget_seconds=review_budget,
         head_sha=event_sha,
+        llm_provider=resolved_llm_provider,
+        gemini_model=resolved_gemini_model,
+        gemini_fallback_model=resolved_gemini_fallback,
+        gemini_max_retries=resolved_gemini_retries,
     )

@@ -170,6 +170,13 @@ class PythonRuleTests(unittest.TestCase):
         self.assertEqual(finding.line_number, 1)
         self.assertEqual(finding.severity, "low")
 
+    def test_print_output_in_scripts_is_not_reported_as_application_noise(self) -> None:
+        diff = single_file_diff(
+            "scripts/demo.py",
+            "@@ -0,0 +1,1 @@\n+print('demo output')\n",
+        )
+        self.assertEqual(analyze_pr(context(diff)), [])
+
     def test_safe_code_has_no_findings(self) -> None:
         diff = single_file_diff(
             "app.py",
@@ -242,6 +249,61 @@ class PythonRuleTests(unittest.TestCase):
         diff = single_file_diff("app.js", "@@ -0,0 +1,1 @@\n+eval(value)\n")
 
         self.assertEqual(analyze_pr(context(diff)), [])
+
+    def test_unreachable_code_not_flagged_in_except_handlers(self) -> None:
+        diff = single_file_diff(
+            "app.py",
+            "@@ -0,0 +1,6 @@\n"
+            "+try:\n"
+            "+    pass\n"
+            "+except FileNotFoundError:\n"
+            "+    raise RuntimeError('not found')\n"
+            "+except Exception:\n"
+            "+    raise RuntimeError('other')\n",
+        )
+        findings = analyze_pr(context(diff))
+        unreachable = [f for f in findings if "unreachable" in f.message.lower()]
+        self.assertEqual(unreachable, [])
+
+    def test_unreachable_code_not_flagged_for_nested_functions(self) -> None:
+        diff = single_file_diff(
+            "app.py",
+            "@@ -0,0 +1,7 @@\n"
+            "+def outer():\n"
+            "+    def inner():\n"
+            "+        return 1\n"
+            "+    x = inner()\n"
+            "+    return x\n",
+        )
+        findings = analyze_pr(context(diff))
+        unreachable = [f for f in findings if "unreachable" in f.message.lower()]
+        self.assertEqual(unreachable, [])
+
+    def test_unreachable_code_detected_after_unconditional_return(self) -> None:
+        diff = single_file_diff(
+            "app.py",
+            "@@ -0,0 +1,4 @@\n"
+            "+def compute():\n"
+            "+    return 1\n"
+            "+    dead_code = 2\n",
+        )
+        findings = analyze_pr(context(diff))
+        unreachable = [f for f in findings if "unreachable" in f.message.lower()]
+        self.assertEqual(len(unreachable), 1)
+        self.assertEqual(unreachable[0].line_number, 3)
+        self.assertIn("Unreachable code", unreachable[0].message)
+
+    def test_unreachable_code_not_flagged_for_replaced_return_statements(self) -> None:
+        diff = single_file_diff(
+            "src/auth.py",
+            "@@ -1,4 +1,4 @@\n"
+            " def verify_password(stored_password, supplied_password):\n"
+            "-    return supplied_password == stored_password\n"
+            "+    return supplied_password.startswith(stored_password)\n",
+        )
+        findings = analyze_pr(context(diff))
+        unreachable = [f for f in findings if "unreachable" in f.message.lower()]
+        self.assertEqual(unreachable, [])
 
 
 if __name__ == "__main__":

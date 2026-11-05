@@ -18,6 +18,17 @@ class ReviewFinding(BaseModel):
 	evidence: StrictStr = Field(min_length=1)
 	suggestion: StrictStr | None = None
 
+	@field_validator("severity", mode="before")
+	@classmethod
+	def normalize_severity(cls, value: object) -> object:
+		"""Accept case variations of the allowed severity labels."""
+		if isinstance(value, str):
+			stripped = value.strip().casefold()
+			for level in ("low", "medium", "high", "critical"):
+				if stripped == level:
+					return level.capitalize()
+		return value
+
 	@field_validator("file", "category", "message", "evidence")
 	@classmethod
 	def reject_whitespace_only(cls, value: str) -> str:

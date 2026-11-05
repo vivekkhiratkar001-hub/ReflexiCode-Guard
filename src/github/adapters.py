@@ -52,6 +52,54 @@ class LocalRepositoryRulesProvider:
         return [{"instructions": rules}] if rules else []
 
 
+class RemoteRepositoryRulesProvider:
+    """Fetch repository guidance from remote repository via GitHubClient."""
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+
+    def get_rules(self, pr: PullRequestInfo) -> list[dict[str, Any]]:
+        import base64
+
+        candidates = [".reviewrules", "docs/requirements.md", "requirements.md"]
+        for candidate in candidates:
+            for ref in (pr.head_sha, pr.base_branch or "main"):
+                if not ref:
+                    continue
+                try:
+                    url = f"{self.client.api_url}repos/{pr.owner}/{pr.repo}/contents/{candidate}?ref={ref}"
+                    resp = self.client.session.get(url, timeout=self.client.timeout)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, dict) and "content" in data:
+                            text = base64.b64decode(data["content"]).decode("utf-8").strip()
+                            if text:
+                                return [{"instructions": text}]
+                except Exception:
+                    continue
+        return []
+
+
+class LocalOrRemoteRepositoryRulesProvider:
+    """Load guidance from local workspace or fetch from remote repository."""
+
+    def __init__(
+        self,
+        repository_root: Path = Path("."),
+        client: Any | None = None,
+    ) -> None:
+        self.local_provider = LocalRepositoryRulesProvider(repository_root)
+        self.client = client
+
+    def get_rules(self, pr: PullRequestInfo) -> list[dict[str, Any]]:
+        local_rules = self.local_provider.get_rules(pr)
+        if local_rules:
+            return local_rules
+        if self.client is not None:
+            return RemoteRepositoryRulesProvider(self.client).get_rules(pr)
+        return []
+
+
 class NullStaticAnalysisProvider:
     """Used when Member 2 static analysis is not available."""
 
@@ -126,6 +174,11 @@ class SharedContractReviewer:
         self.changed_lines = changed_lines
         self.changed_line_content = changed_line_content
         self.context_builder = context_builder or ReviewContextBuilder()
+        self.context_limitations: tuple[str, ...] = ()
+        self.review_failures: tuple[str, ...] = ()
+        self.reviewed_files: tuple[str, ...] = ()
+        self.partially_reviewed_files: tuple[str, ...] = ()
+        self.unreviewed_files: tuple[str, ...] = ()
 
     def review(
         self,
@@ -167,25 +220,53 @@ class SharedContractReviewer:
             semantic_findings = self.pipeline.review(llm_context)
         except ReviewResponseError as error:
             raise RuntimeError(f"Member 3 rejected the model response: {error}") from error
+        finally:
+            self.context_limitations = self.pipeline.last_context_limitations
+            self.review_failures = self.pipeline.last_review_failures
+            self.reviewed_files = self.pipeline.last_reviewed_files
+            self.partially_reviewed_files = self.pipeline.last_partially_reviewed_files
+            self.unreviewed_files = self.pipeline.last_unreviewed_files
 
-        static_evidence = {
+        static_category_evidence = {
             (
                 finding.file_path.replace("\\", "/").casefold(),
                 finding.line_number,
+                finding.category.casefold(),
                 "".join(finding.evidence.split()).casefold(),
             )
             for finding in findings
         }
-        unique_semantic = [
-            finding
-            for finding in semantic_findings
-            if (
-                finding.file.replace("\\", "/").casefold(),
-                finding.line,
+        static_locations = {
+            (
+                finding.file_path.replace("\\", "/").casefold(),
+                finding.line_number,
+            )
+            for finding in findings
+            if finding.category.casefold() in ("complexity", "style", "static_analysis")
+        }
+        unique_semantic = []
+        for finding in semantic_findings:
+            loc = (finding.file.replace("\\", "/").casefold(), finding.line)
+            sem_cat = finding.category.casefold()
+            ev_key = (
+                loc[0],
+                loc[1],
+                sem_cat,
                 "".join(finding.evidence.split()).casefold(),
             )
-            not in static_evidence
-        ]
+            # Functional bugs and logic defects must never be dropped by static findings
+            if sem_cat in ("bug", "correctness", "logic"):
+                unique_semantic.append(finding)
+                continue
+            if ev_key in static_category_evidence:
+                continue
+            if loc in static_locations and sem_cat in (
+                "maintainability",
+                "style",
+                "complexity",
+            ):
+                continue
+            unique_semantic.append(finding)
         return findings + [
             AnalysisFinding(
                 file_path=finding.file,
@@ -310,9 +391,12 @@ class FileStaticAnalysisProvider:
         return [dict(item) for item in payload]
 
 
-def select_rules_provider(rules_file: Path | None) -> RepositoryRulesProvider:
+def select_rules_provider(
+    rules_file: Path | None,
+    client: Any | None = None,
+) -> RepositoryRulesProvider:
     if rules_file is None:
-        return LocalRepositoryRulesProvider()
+        return LocalOrRemoteRepositoryRulesProvider(client=client)
     return FileRepositoryRulesProvider(rules_file)
 
 

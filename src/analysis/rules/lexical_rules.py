@@ -24,7 +24,11 @@ def _find_line(lines: Sequence[DiffLine], target_line_no: int) -> Optional[DiffL
     return None
 
 
-def run_lexical_rules(lines: Sequence[DiffLine]) -> List[RuleFinding]:
+def run_lexical_rules(
+    lines: Sequence[DiffLine],
+    *,
+    report_print: bool = True,
+) -> List[RuleFinding]:
     """Fallback rules executed when AST parsing is unavailable for incomplete fragments."""
     tokens = tokenize_source("\n".join(line.text for line in lines))
     findings: List[RuleFinding] = []
@@ -138,7 +142,7 @@ def run_lexical_rules(lines: Sequence[DiffLine]) -> List[RuleFinding]:
                         )
 
                 # 5. print()
-                elif value == "print" and index + 1 < num_tokens:
+                elif report_print and value == "print" and index + 1 < num_tokens:
                     if tokens[index + 1].string == "(":
                         findings.append(
                             RuleFinding(

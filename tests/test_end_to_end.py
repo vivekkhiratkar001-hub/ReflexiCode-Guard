@@ -124,6 +124,12 @@ def test_end_to_end_pipeline_handles_multiple_valid_findings_and_deduplicates() 
 
 def test_end_to_end_pipeline_rejects_malformed_or_invalid_provider_output() -> None:
     context = build_review_context()
+    pipeline = ReviewPipeline(MockProvider('{not valid json}'))
+    findings = pipeline.review(context)
 
-    with pytest.raises(ReviewResponseError):
-        ReviewPipeline(MockProvider('{not valid json}')).review(context)
+    assert findings == []
+    assert pipeline.last_failed_batch_count > 0
+    assert len(pipeline.last_review_failures) > 0
+    # The failure message contains "Member 3 rejected the model response" for ReviewResponseError
+    assert any("rejected the model response" in failure or "failed" in failure.lower() for failure in pipeline.last_review_failures)
+    assert len(pipeline.last_unreviewed_files) > 0

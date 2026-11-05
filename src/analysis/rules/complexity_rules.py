@@ -38,34 +38,34 @@ def calculate_cyclomatic_complexity(func_node: ast.AST) -> int:
 
     Nested functions are treated as independent units and not double-counted.
     """
+    if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return 1
+
     complexity = 1
+    nested_scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
-    for child in ast.iter_child_nodes(func_node):
-        # Do not recurse into nested function definitions; they have their own complexity calculation
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-
-        for subnode in ast.walk(child):
-            # Do not count nodes inside nested functions
-            if isinstance(subnode, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    def visit(node: ast.AST) -> None:
+        nonlocal complexity
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, nested_scopes):
                 continue
+            if isinstance(child, (ast.If, ast.While, ast.For, ast.AsyncFor)):
+                complexity += 1
+            elif isinstance(child, ast.ExceptHandler):
+                complexity += 1
+            elif isinstance(child, (ast.With, ast.AsyncWith)):
+                complexity += 1
+            elif isinstance(child, ast.Assert):
+                complexity += 1
+            elif isinstance(child, ast.IfExp):
+                complexity += 1
+            elif isinstance(child, ast.comprehension):
+                complexity += len(child.ifs)
+            elif isinstance(child, ast.BoolOp):
+                complexity += max(0, len(child.values) - 1)
+            visit(child)
 
-            if isinstance(subnode, (ast.If, ast.While, ast.For, ast.AsyncFor)):
-                complexity += 1
-            elif isinstance(subnode, ast.ExceptHandler):
-                complexity += 1
-            elif isinstance(subnode, (ast.With, ast.AsyncWith)):
-                complexity += 1
-            elif isinstance(subnode, ast.Assert):
-                complexity += 1
-            elif isinstance(subnode, ast.IfExp):
-                complexity += 1
-            elif isinstance(subnode, ast.comprehension):
-                complexity += len(subnode.ifs)
-            elif isinstance(subnode, ast.BoolOp):
-                # e.g., 'a and b' has 2 values -> 1 branch point; 'a and b and c' has 3 values -> 2 branch points
-                complexity += max(0, len(subnode.values) - 1)
-
+    visit(func_node)
     return complexity
 
 

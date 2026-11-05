@@ -11,7 +11,7 @@ from .evaluation import (
 )
 from .mock_provider import MockProvider
 from .ollama_provider import OllamaProvider
-from .parser import ReviewResponseError, ReviewResponseParser
+from .parser import FindingRejection, ReviewResponseError, ReviewResponseParser
 from .pipeline import ReviewPipeline
 from .prompts import ReviewPromptBuilder
 from .provider import LLMProvider
@@ -22,6 +22,7 @@ __all__ = [
     "CaseEvaluationResult",
     "EvaluationCase",
     "EvaluationResult",
+    "FindingRejection",
     "GroundTruthFinding",
     "LLMProvider",
     "MockProvider",

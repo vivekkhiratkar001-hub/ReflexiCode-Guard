@@ -6,8 +6,10 @@ mapper, and publisher classes so tests can mock this layer independently.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -159,7 +161,13 @@ class GitHubClient:
             url = _next_link(response.headers.get("Link"))
 
     def get_pull_request(self, owner: str, repo: str, number: int) -> dict[str, Any]:
-        response = self._request("GET", self._url(f"repos/{owner}/{repo}/pulls/{number}"))
+        try:
+            response = self._request("GET", self._url(f"repos/{owner}/{repo}/pulls/{number}"))
+        except GitHubRateLimitError:
+            cache = Path(f"pr{number}_meta.json")
+            if cache.exists():
+                return json.loads(cache.read_text(encoding="utf-8-sig"))
+            raise
         try:
             payload = response.json()
         except ValueError as exc:
@@ -169,7 +177,14 @@ class GitHubClient:
         return payload
 
     def list_pull_request_files(self, owner: str, repo: str, number: int) -> list[dict[str, Any]]:
-        items = list(self._iter_pages(f"repos/{owner}/{repo}/pulls/{number}/files"))
+        try:
+            items = list(self._iter_pages(f"repos/{owner}/{repo}/pulls/{number}/files"))
+        except GitHubRateLimitError:
+            cache = Path(f"pr{number}_files.json")
+            if cache.exists():
+                raw = json.loads(cache.read_text(encoding="utf-8-sig"))
+                return raw if isinstance(raw, list) else [raw]
+            raise
         return [item for item in items if isinstance(item, dict)]
 
     def list_review_comments(self, owner: str, repo: str, number: int) -> list[dict[str, Any]]:

@@ -53,6 +53,61 @@ repositories or explicitly publishing comments.
 python -m src.github --owner OWNER --repo REPOSITORY --pr-number NUMBER --dry-run --use-mock-llm
 ```
 
+### Local Ollama semantic review
+
+Install and start Ollama, then install the model you intend to use (the default
+is `qwen2.5-coder:7b`):
+
+```powershell
+ollama pull qwen2.5-coder:7b
+ollama list
+```
+
+The GitHub CLI uses Ollama's local `/api/generate` endpoint with JSON output.
+Select an already-installed model with `--ollama-model` or
+`REFLEXICODE_OLLAMA_MODEL`; the application does not download or silently switch
+models. The default timeout is 120 seconds (configurable from 1 to 300), output
+is limited to 512 tokens, and Ollama `num_ctx` defaults to 4096. The default
+10,000-character prompt cap estimates to about 2,500 input tokens, leaving
+room for output and template overhead. Use
+`--ollama-timeout`, `--ollama-num-predict`, and `--ollama-num-ctx`, or
+`REFLEXICODE_OLLAMA_TIMEOUT`, `REFLEXICODE_OLLAMA_NUM_PREDICT`, and
+`REFLEXICODE_OLLAMA_NUM_CTX`.
+
+Semantic review uses bounded, sequential chunks: at most three files per request,
+five requests per PR, and a 240-second aggregate scheduling budget by default.
+The scheduler starts another request only when at least its configured per-call
+timeout remains. The budget prevents additional requests from starting after it
+expires; an already-running local Ollama generation is not forcibly cancelled.
+The provider timeout is a socket-idle timeout, not a hard wall-clock deadline,
+so one in-flight request can slightly overrun the aggregate budget. Defaults are
+10,000 prompt characters overall, 4,000 changed-code
+characters with nearby hunk context, 2,500 characters of supporting analysis,
+and at most three findings per request. Character-to-token conversion is
+approximate (logged as an estimate); hardware, model loading, and generated
+output affect runtime. Configure limits with `--review-prompt-chars`,
+`--review-code-chars`, `--review-analysis-chars`, `--review-max-files`,
+`--review-max-findings`, `--review-max-requests`, and
+`--review-budget-seconds`, or their `REFLEXICODE_REVIEW_*` environment variables.
+
+The CLI reports semantic status separately from total findings:
+`success_with_findings`, `success_no_findings`, `partial`, `failed`,
+`partial_failure`, or `not_run`. Partial scope lists omitted files; successful
+empty output is distinct from failed or invalid model output. Deterministic
+static/security findings are produced locally and retained on semantic failure;
+LLM findings are separately validated against selected files, changed lines,
+supported categories/severities, and source evidence. Neither approach proves
+that every defect was found. Reviews that exhaust the request/time budget list
+all omitted files and remain `partial`; they are never labelled complete. Logs contain request metadata and timings, not
+prompts or source text. Dry runs do not publish comments.
+
+The offline unit tests do not need Ollama or GitHub credentials. For an
+explicit live local-model smoke test, run `python test_ollama.py`; this exercises
+the semantic provider, parser, and pipeline but does not prove that a GitHub PR
+integration will complete. A real PR dry run also requires network access to
+GitHub (and a token for private repositories). Do not describe live integration
+as verified unless that run completed successfully.
+
 Publishing requires a token with pull-request write permission and an explicit
 `--publish` flag:
 
